@@ -30,6 +30,26 @@ npm test            # unit tests (recommendation scoring engine)
 npm run web         # run in a browser
 ```
 
+## Deploying as a website
+
+The app exports to a fully static website (`npm run build` → `dist/`), so any static host works. Three ready-to-go options:
+
+**Vercel (recommended — ~2 minutes)**
+1. Go to [vercel.com/new](https://vercel.com/new), sign in with GitHub, and import this repository.
+2. Vercel reads `vercel.json` automatically (build: `npm run build`, output: `dist`). Just click **Deploy**.
+3. You get a live URL like `https://a2z.vercel.app`. Every push to the connected branch redeploys automatically.
+
+**Netlify**
+1. Go to [app.netlify.com/start](https://app.netlify.com/start), sign in with GitHub, and pick this repository.
+2. Netlify reads `netlify.toml` automatically. Click **Deploy**.
+
+**GitHub Pages (no extra account needed)**
+1. In the GitHub repo: **Settings → Pages → Build and deployment → Source: "GitHub Actions"**.
+2. Merge this branch into `main` (or run the workflow manually from the **Actions** tab → *Deploy web to GitHub Pages* → **Run workflow**).
+3. The included workflow (`.github/workflows/deploy-web.yml`) tests, builds with the `/A2Z` base path, and publishes to `https://<your-username>.github.io/A2Z/`.
+
+To host anywhere else, run `npm run build` and upload the `dist/` folder (set `EXPO_BASE_URL=/subpath` first if the site won't live at the domain root).
+
 ### Demo data
 
 Mock data covers these corridors end-to-end (use the quick-fill chips on the Home screen):
