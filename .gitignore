@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# native builds
+ios/
+android/
+
+# env — never commit real keys
+.env
+.env.local
+.env.*.local
+
+# misc
+*.log
+.DS_Store
+coverage/

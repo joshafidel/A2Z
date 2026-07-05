@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "A2Z",
+    "slug": "a2z",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "scheme": "a2z",
+    "newArchEnabled": true,
+    "splash": {
+      "backgroundColor": "#101A3D",
+      "resizeMode": "contain"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.a2z.travel"
+    },
+    "android": {
+      "package": "com.a2z.travel",
+      "edgeToEdgeEnabled": true
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    }
+  }
+}
