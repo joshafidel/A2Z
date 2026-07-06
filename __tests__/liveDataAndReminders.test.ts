@@ -5,9 +5,11 @@
 
 import {
   buildBusBookingLink,
+  buildExpediaFlightLink,
   buildFlightSearchLink,
   buildHotelSearchLink,
   buildRentalCarLink,
+  buildTicketPurchaseLink,
   buildTrainBookingLink,
 } from '../src/services/deepLinkService';
 import { getHotelRecommendations } from '../src/services/hotelService';
@@ -56,6 +58,30 @@ describe('real booking handoff links', () => {
     const url = buildHotelSearchLink('Boston', '2026-07-11T12:00:00.000Z', 2);
     expect(url).toContain('checkin=2026-07-11');
     expect(url).toContain('checkout=2026-07-13');
+  });
+
+  it('builds an Expedia one-way search in the official URL format', () => {
+    const link = buildExpediaFlightLink('JFK', 'MIA', '2026-07-25T13:00:00.000Z', 2);
+    const decoded = decodeURIComponent(link.webUrl);
+    expect(decoded).toContain('expedia.com/Flights-Search?trip=oneway');
+    expect(decoded).toContain('from:JFK,to:MIA,departure:07/25/2026TANYT');
+    expect(decoded).toContain('adults:2');
+  });
+
+  it('routes ticket purchases to the right provider per mode', () => {
+    const flight = buildTicketPurchaseLink('flight', {
+      originCode: 'LGA',
+      destCode: 'BOS',
+      departureIso: '2026-07-11T12:00:00.000Z',
+    });
+    expect(flight.provider).toBe('Expedia');
+    const train = buildTicketPurchaseLink('train', {
+      originCity: 'New York, NY',
+      destCity: 'Boston, MA',
+      departureIso: '2026-07-11T12:00:00.000Z',
+    });
+    expect(train.label).toBe('Purchase Amtrak ticket');
+    expect(train.webUrl).toContain('wanderu.com'); // live Amtrak fares → Amtrak checkout
   });
 });
 

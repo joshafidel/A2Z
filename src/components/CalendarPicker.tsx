@@ -122,13 +122,17 @@ export function CalendarPicker({ selected, onSelect, maxDaysAhead = 365 }: Calen
 
 const styles = StyleSheet.create({
   // Compact layout: the whole month + the rest of the date step fit on
-  // one phone screen without scrolling.
+  // one phone screen without scrolling, and the grid stays a tidy square
+  // rather than stretching to the container width.
   card: {
     backgroundColor: colors.surface,
     borderRadius: radii.md,
     borderWidth: 1,
     borderColor: colors.border,
     padding: spacing.md,
+    width: '100%',
+    maxWidth: 330,
+    alignSelf: 'center',
   },
   header: {
     flexDirection: 'row',

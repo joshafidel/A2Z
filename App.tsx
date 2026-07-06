@@ -4,6 +4,7 @@ import { DefaultTheme, NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import React from 'react';
+import { StyleSheet, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { TripProvider } from './src/context/TripContext';
@@ -49,8 +50,12 @@ const navTheme = {
 export default function App() {
   return (
     <SafeAreaProvider>
-      <TripProvider>
-        <NavigationContainer theme={navTheme}>
+      {/* Phone-width column on large screens — the app never spans a
+          full desktop window. */}
+      <View style={styles.desktopBackdrop}>
+        <View style={styles.appColumn}>
+          <TripProvider>
+            <NavigationContainer theme={navTheme}>
           <StatusBar style="dark" />
           <Tabs.Navigator
             screenOptions={({ route }) => ({
@@ -77,9 +82,30 @@ export default function App() {
             <Tabs.Screen name="PlanTab" component={PlanStack} options={{ title: 'Plan' }} />
             <Tabs.Screen name="TripTab" component={DashboardScreen} options={{ title: 'My Trip' }} />
             <Tabs.Screen name="SettingsTab" component={SettingsScreen} options={{ title: 'Settings' }} />
-          </Tabs.Navigator>
-        </NavigationContainer>
-      </TripProvider>
+              </Tabs.Navigator>
+            </NavigationContainer>
+          </TripProvider>
+        </View>
+      </View>
     </SafeAreaProvider>
   );
 }
+
+const styles = StyleSheet.create({
+  desktopBackdrop: {
+    flex: 1,
+    alignItems: 'center',
+    backgroundColor: '#D9DDEA',
+  },
+  appColumn: {
+    flex: 1,
+    width: '100%',
+    maxWidth: 520,
+    backgroundColor: colors.background,
+    // Soft edges where the column meets the backdrop on wide screens.
+    shadowColor: '#101A3D',
+    shadowOpacity: 0.12,
+    shadowRadius: 30,
+    shadowOffset: { width: 0, height: 0 },
+  },
+});

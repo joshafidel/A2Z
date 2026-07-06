@@ -19,6 +19,10 @@ import { WarningList } from '../components/WarningList';
 import { useTrip } from '../context/TripContext';
 import type { PlannerScreenProps } from '../navigation/types';
 import { explainAccessChoice, getAccessOptions, type AccessOption } from '../services/accessService';
+import { buildTicketPurchaseLink } from '../services/deepLinkService';
+import { openBookingLink } from '../components/BookingLinks';
+import { CORRIDOR_CITIES } from '../data/cities';
+import { findCityCoords } from '../data/airports';
 import { getCurrentLocation } from '../services/locationService';
 import { getHotelRecommendations } from '../services/hotelService';
 import { detectCityKey } from '../data/cities';
@@ -128,6 +132,11 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
   const [ticketBoards, setTicketBoards] = useState<Partial<Record<GroupKey, TicketOption[]>>>({});
   const [modeStats, setModeStats] = useState<Partial<Record<GroupKey, ModeStats>>>({});
   const [ticket, setTicket] = useState<TicketOption>();
+  const [ticketSort, setTicketSort] = useState<'recommended' | 'price' | 'time'>('recommended');
+  const [pendingTicket, setPendingTicket] = useState<TicketOption>(); // showing purchase choices
+  const [purchaseIntent, setPurchaseIntent] = useState<'now' | 'end' | 'later'>();
+  const [showOtherModes, setShowOtherModes] = useState(false);
+  const [hotelTiming, setHotelTiming] = useState<'first' | 'later'>('first');
   const [directRoute, setDirectRoute] = useState<RouteOption>();
   const [purpose, setPurpose] = useState<TripPurpose>();
   const [hotels, setHotels] = useState<HotelOption[]>();
@@ -176,6 +185,9 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
   // Invalidate downstream choices when upstream answers change --------------
   const resetFromMode = () => {
     setTicket(undefined);
+    setPendingTicket(undefined);
+    setPurchaseIntent(undefined);
+    setTicketSort('recommended');
     setDirectRoute(undefined);
     setFirstOptions(undefined);
     setLastOptions(undefined);
@@ -375,6 +387,34 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     if (ok) setSaved(true);
   };
 
+  /** Real purchase handoff for a ticket: Expedia / Amtrak / FlixBus. */
+  const purchaseLinkFor = (t: TicketOption) => {
+    if (!search || !results) return undefined;
+    const originCode = t.haul.fromStation.match(/\(([A-Z]{3})\)/)?.[1];
+    const destCode = t.haul.toStation.match(/\(([A-Z]{3})\)/)?.[1];
+    const cities = CORRIDOR_CITIES[results.corridor as keyof typeof CORRIDOR_CITIES];
+    return buildTicketPurchaseLink(t.haul.mode, {
+      originCode,
+      destCode,
+      originCity: cities?.origin ?? findCityCoords(search.origin.address)?.city,
+      destCity: cities?.dest ?? findCityCoords(search.destination.address)?.city,
+      departureIso: t.departureTime,
+      travelers: search.travelers,
+    });
+  };
+
+  const chooseTicket = (t: TicketOption, intent: 'now' | 'end' | 'later') => {
+    setTicket(t);
+    setPurchaseIntent(intent);
+    setPendingTicket(undefined);
+    setFinalRoute(undefined);
+    if (intent === 'now') {
+      const link = purchaseLinkFor(t);
+      if (link) openBookingLink(link);
+    }
+    setTimeout(goNext, 100);
+  };
+
   // -------------------------------------------------------------------------
   // Render
   // -------------------------------------------------------------------------
@@ -539,6 +579,39 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
             <Text style={styles.hotelAskHint}>
               We'll show stays matched to your trip right after you pick your ticket.
             </Text>
+            {needHotel && (
+              <View style={styles.timingBlock}>
+                <Text style={styles.timingLabel}>WHEN DO YOU GET THERE?</Text>
+                {(
+                  [
+                    { value: 'first', label: 'The hotel is my first stop' },
+                    { value: 'later', label: "I'm going somewhere else first" },
+                  ] as const
+                ).map((opt) => (
+                  <Pressable
+                    key={opt.value}
+                    onPress={() => setHotelTiming(opt.value)}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: hotelTiming === opt.value }}
+                    style={styles.timingRow}
+                  >
+                    <Ionicons
+                      name={hotelTiming === opt.value ? 'radio-button-on' : 'radio-button-off'}
+                      size={18}
+                      color={hotelTiming === opt.value ? colors.primary : colors.textMuted}
+                    />
+                    <Text
+                      style={[
+                        styles.timingText,
+                        hotelTiming === opt.value && styles.timingTextSelected,
+                      ]}
+                    >
+                      {opt.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
           </Card>
         )}
       </View>
@@ -548,7 +621,7 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
   function renderDateStep() {
     if (searching) return <LoadingState message="Curating every way to get there…" />;
     return (
-      <View style={styles.stepBody}>
+      <View style={[styles.stepBody, styles.dateStepBody]}>
         <CalendarPicker selected={date} onSelect={setDate} />
 
         <Text style={styles.subLabel}>DEPARTURE WINDOW (OPTIONAL)</Text>
@@ -580,14 +653,22 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
   }
 
   function renderModeStep() {
-    return (
-      <View style={styles.stepBody}>
-        <Text style={styles.stepHint}>
-          Price and time ranges cover every option we found — cheapest, priciest, and typical.
-        </Text>
-        {grouped.map((g) => {
-          const stats = modeStats[g.key];
-          return (
+    // Viability: on long trips, modes that take 3x+ the flight (or 12h+
+    // when flying is possible) are tucked away — visible to explore, but
+    // never pushed front and center.
+    const flightAvg = modeStats.flights?.durationMinutes.avg;
+    const isViable = (key: GroupKey) => {
+      if (key === 'flights' || !flightAvg) return true;
+      const s = modeStats[key];
+      if (!s) return true;
+      return s.durationMinutes.min <= Math.max(12 * 60, flightAvg * 3);
+    };
+    const viableGroups = grouped.filter((g) => isViable(g.key));
+    const otherGroups = grouped.filter((g) => !isViable(g.key));
+
+    const renderGroupCard = (g: (typeof grouped)[number]) => {
+      const stats = modeStats[g.key];
+      return (
             <Pressable
               key={g.key}
               onPress={() => {
@@ -633,8 +714,37 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
                 <Text style={styles.modeCount}>Loading price & time ranges…</Text>
               )}
             </Pressable>
-          );
-        })}
+      );
+    };
+
+    return (
+      <View style={styles.stepBody}>
+        <Text style={styles.stepHint}>
+          Price and time ranges cover every option we found — cheapest, priciest, and typical.
+        </Text>
+        {viableGroups.map(renderGroupCard)}
+
+        {otherGroups.length > 0 && (
+          <>
+            <Pressable
+              onPress={() => setShowOtherModes((v) => !v)}
+              style={({ pressed }) => [styles.otherModesToggle, pressed && styles.pressed]}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: showOtherModes }}
+            >
+              <Ionicons
+                name={showOtherModes ? 'chevron-down' : 'chevron-forward'}
+                size={16}
+                color={colors.textSecondary}
+              />
+              <Text style={styles.otherModesText}>
+                {otherGroups.length} slower option{otherGroups.length === 1 ? '' : 's'} to explore (
+                {otherGroups.map((g) => g.title).join(', ')})
+              </Text>
+            </Pressable>
+            {showOtherModes && otherGroups.map(renderGroupCard)}
+          </>
+        )}
       </View>
     );
   }
@@ -647,52 +757,95 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     if (g.lineHaulMode) {
       const board = ticketBoards[g.key];
       if (!board) return <LoadingState message="Loading departures…" />;
+
+      const sorted = [...board].sort((a, b) => {
+        if (ticketSort === 'price') {
+          return (a.farePerPersonUsd ?? Infinity) - (b.farePerPersonUsd ?? Infinity);
+        }
+        if (ticketSort === 'time') {
+          return new Date(a.departureTime).getTime() - new Date(b.departureTime).getTime();
+        }
+        // recommended first, then by departure
+        if (a.recommended !== b.recommended) return a.recommended ? -1 : 1;
+        return new Date(a.departureTime).getTime() - new Date(b.departureTime).getTime();
+      });
+
       return (
         <View style={styles.stepBody}>
-          <Text style={styles.stepHint}>
-            Only {g.title.toLowerCase()} tickets for your date — recommended first.
-          </Text>
-          {board.map((t) => (
-            <Pressable
-              key={t.haul.id}
-              onPress={() => {
-                setTicket(t);
-                setFinalRoute(undefined);
-                setTimeout(goNext, 100);
-              }}
-              style={({ pressed }) => [
-                styles.ticketCard,
-                ticket?.haul.id === t.haul.id && styles.modeCardSelected,
-                t.recommended && styles.ticketRecommended,
-                pressed && styles.pressed,
-              ]}
-            >
-              {t.recommended && (
-                <View style={styles.recommendBanner}>
-                  <Ionicons name="star" size={11} color="#FFFFFF" />
-                  <Text style={styles.recommendBannerText}>RECOMMENDED</Text>
+          <View style={styles.sortRow}>
+            <Text style={styles.sortLabel}>SORT BY</Text>
+            <Chip label="Recommended" selected={ticketSort === 'recommended'} onPress={() => setTicketSort('recommended')} />
+            <Chip label="Price" selected={ticketSort === 'price'} onPress={() => setTicketSort('price')} />
+            <Chip label="Time of day" selected={ticketSort === 'time'} onPress={() => setTicketSort('time')} />
+          </View>
+          {sorted.map((t) => {
+            const isPending = pendingTicket?.haul.id === t.haul.id;
+            return (
+              <Pressable
+                key={t.haul.id}
+                onPress={() => setPendingTicket(isPending ? undefined : t)}
+                style={({ pressed }) => [
+                  styles.ticketCard,
+                  (isPending || ticket?.haul.id === t.haul.id) && styles.modeCardSelected,
+                  t.recommended && styles.ticketRecommended,
+                  pressed && styles.pressed,
+                ]}
+              >
+                {t.recommended && (
+                  <View style={styles.recommendBanner}>
+                    <Ionicons name="star" size={11} color="#FFFFFF" />
+                    <Text style={styles.recommendBannerText}>RECOMMENDED</Text>
+                  </View>
+                )}
+                <View style={styles.ticketRow}>
+                  <View style={styles.flex1}>
+                    <Text style={styles.ticketTimes}>
+                      {formatTime(t.departureTime)} → {formatTime(t.arrivalTime)}
+                    </Text>
+                    <Text style={styles.ticketMeta}>
+                      {t.haul.provider} {t.haul.serviceName} · {formatDuration(t.haul.durationMinutes)}
+                      {t.haul.notes?.[0] ? ` · ${t.haul.notes[0]}` : ''}
+                    </Text>
+                    {t.note ? <Text style={styles.ticketNote}>{t.note}</Text> : null}
+                  </View>
+                  <View style={styles.ticketPriceWrap}>
+                    <Text style={styles.ticketPrice}>
+                      {t.farePerPersonUsd !== undefined ? formatMoney(t.farePerPersonUsd) : '—'}
+                    </Text>
+                    <Text style={styles.ticketPriceUnit}>per person</Text>
+                  </View>
                 </View>
-              )}
-              <View style={styles.ticketRow}>
-                <View style={styles.flex1}>
-                  <Text style={styles.ticketTimes}>
-                    {formatTime(t.departureTime)} → {formatTime(t.arrivalTime)}
-                  </Text>
-                  <Text style={styles.ticketMeta}>
-                    {t.haul.provider} {t.haul.serviceName} · {formatDuration(t.haul.durationMinutes)}
-                    {t.haul.notes?.[0] ? ` · ${t.haul.notes[0]}` : ''}
-                  </Text>
-                  {t.note ? <Text style={styles.ticketNote}>{t.note}</Text> : null}
-                </View>
-                <View style={styles.ticketPriceWrap}>
-                  <Text style={styles.ticketPrice}>
-                    {t.farePerPersonUsd !== undefined ? formatMoney(t.farePerPersonUsd) : '—'}
-                  </Text>
-                  <Text style={styles.ticketPriceUnit}>per person</Text>
-                </View>
-              </View>
-            </Pressable>
-          ))}
+
+                {/* Purchase choices appear when the ticket is tapped */}
+                {isPending && (
+                  <View style={styles.purchasePanel}>
+                    <AppButton
+                      label={purchaseLinkFor(t)?.label ?? 'Purchase now'}
+                      icon="cart"
+                      small
+                      onPress={() => chooseTicket(t, 'now')}
+                    />
+                    <View style={styles.purchaseRow}>
+                      <AppButton
+                        label="Buy at the end"
+                        variant="secondary"
+                        small
+                        style={styles.flex1}
+                        onPress={() => chooseTicket(t, 'end')}
+                      />
+                      <AppButton
+                        label="Book later"
+                        variant="ghost"
+                        small
+                        style={styles.flex1}
+                        onPress={() => chooseTicket(t, 'later')}
+                      />
+                    </View>
+                  </View>
+                )}
+              </Pressable>
+            );
+          })}
         </View>
       );
     }
@@ -819,8 +972,8 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     const target =
       which === 'first'
         ? ticket?.haul.fromStation ?? 'your departure point'
-        : hotel
-          ? hotel.name
+        : hotel && hotelTiming === 'first'
+          ? hotel.name // hotel is the first stop → the last mile ends there
           : search?.destination.label ?? 'your destination';
 
     if (!options) return <LoadingState message="Pricing every way to connect…" />;
@@ -886,11 +1039,34 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
             <View style={styles.summaryHotel}>
               <Ionicons name="bed" size={15} color={colors.primary} />
               <Text style={styles.summaryHotelText}>
-                {hotel.name} — ${hotel.pricePerNightUsd}/night · {hotel.distanceLabel}
+                {hotel.name} — ${hotel.pricePerNightUsd}/night ·{' '}
+                {hotelTiming === 'first' ? 'your first stop' : 'checking in later'}
               </Text>
             </View>
           )}
         </Card>
+
+        {/* Ticket queued for purchase at the end of planning */}
+        {purchaseIntent === 'end' && ticket && (
+          <Card style={styles.buyNowCard}>
+            <View style={styles.flex1}>
+              <Text style={styles.buyNowTitle}>Finish your booking</Text>
+              <Text style={styles.buyNowText}>
+                You queued {ticket.haul.provider} {ticket.haul.serviceName} (
+                {formatTime(ticket.departureTime)}) to buy at the end — this is the end!
+              </Text>
+            </View>
+            <AppButton
+              label="Buy ticket"
+              icon="cart"
+              small
+              onPress={() => {
+                const link = purchaseLinkFor(ticket);
+                if (link) openBookingLink(link);
+              }}
+            />
+          </Card>
+        )}
 
         <WarningList warnings={finalRoute.warnings} />
         <MapPreview route={finalRoute} />
@@ -1046,6 +1222,7 @@ const styles = StyleSheet.create({
   },
   content: { padding: spacing.lg, paddingBottom: 120 },
   stepBody: { gap: spacing.md },
+  dateStepBody: { width: '100%', maxWidth: 380, alignSelf: 'center' },
   stepHint: {
     fontSize: 13,
     color: colors.text,
@@ -1072,6 +1249,31 @@ const styles = StyleSheet.create({
   },
   checkboxChecked: { backgroundColor: colors.primary, borderColor: colors.primary },
   hotelAskText: { ...typography.bodyMedium, color: colors.text },
+  timingBlock: { gap: spacing.xs, marginTop: spacing.sm },
+  timingLabel: { ...typography.micro, color: colors.textMuted, marginBottom: 2 },
+  timingRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, minHeight: 34 },
+  timingText: { fontSize: 14, color: colors.textSecondary, fontWeight: '500' },
+  timingTextSelected: { color: colors.ink, fontWeight: '700' },
+  otherModesToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.sm,
+  },
+  otherModesText: { fontSize: 13, fontWeight: '600', color: colors.textSecondary, flex: 1 },
+  sortRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexWrap: 'wrap' },
+  sortLabel: { ...typography.micro, color: colors.textMuted },
+  purchasePanel: {
+    gap: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: spacing.md,
+  },
+  purchaseRow: { flexDirection: 'row', gap: spacing.sm },
+  buyNowCard: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, backgroundColor: colors.warningSoft, borderColor: colors.warning },
+  buyNowTitle: { fontSize: 14, fontWeight: '800', color: colors.ink },
+  buyNowText: { fontSize: 12, color: colors.textSecondary, marginTop: 2, lineHeight: 17 },
   hotelAskHint: { fontSize: 12, color: colors.textMuted, lineHeight: 16 },
   subLabel: { ...typography.micro, color: colors.textMuted },
   countRow: { flexDirection: 'row', gap: spacing.md },
@@ -1079,13 +1281,13 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.sm,
+    gap: spacing.xs,
     backgroundColor: colors.surface,
     borderRadius: radii.md,
     borderWidth: 1,
     borderColor: colors.border,
-    paddingHorizontal: spacing.md,
-    minHeight: 52,
+    paddingHorizontal: spacing.sm,
+    minHeight: 44,
   },
   counterLabel: { flex: 1, fontSize: 13, fontWeight: '600', color: colors.textSecondary },
   counterButton: {

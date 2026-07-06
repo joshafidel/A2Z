@@ -166,6 +166,66 @@ export function buildBusBookingLink(
   };
 }
 
+/**
+ * Expedia one-way flight search pre-filled with the real route, date, and
+ * traveler count (official URL format). Expedia shows live fares; booking
+ * completes on their site. Airlines/Amtrak expose no public fare API, so
+ * this handoff IS the live-price path.
+ */
+export function buildExpediaFlightLink(
+  originCode: string,
+  destCode: string,
+  departureIso: string,
+  travelers = 1,
+): BookingLink {
+  const d = new Date(departureIso);
+  const mmddyyyy = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}/${d.getFullYear()}`;
+  const leg = `from:${originCode},to:${destCode},departure:${mmddyyyy}TANYT`;
+  return {
+    id: id('expedia'),
+    label: 'Purchase on Expedia',
+    provider: 'Expedia',
+    kind: 'flight',
+    icon: 'airplane',
+    webUrl: `https://www.expedia.com/Flights-Search?trip=oneway&leg1=${enc(leg)}&passengers=${enc(`adults:${travelers}`)}&mode=search`,
+  };
+}
+
+/**
+ * The right "purchase this ticket" handoff per mode: Expedia for flights,
+ * Wanderu→Amtrak for trains (live Amtrak fares for the exact date),
+ * FlixBus for buses.
+ */
+export function buildTicketPurchaseLink(
+  mode: 'flight' | 'train' | 'bus',
+  opts: {
+    originCode?: string;
+    destCode?: string;
+    originCity?: string;
+    destCity?: string;
+    departureIso: string;
+    travelers?: number;
+  },
+): BookingLink {
+  if (mode === 'flight' && opts.originCode && opts.destCode) {
+    return buildExpediaFlightLink(opts.originCode, opts.destCode, opts.departureIso, opts.travelers);
+  }
+  if (mode === 'train') {
+    const link = buildTrainBookingLink('Amtrak', 'https://www.amtrak.com/tickets/departure.html', {
+      originCity: opts.originCity,
+      destCity: opts.destCity,
+      departureIso: opts.departureIso,
+    });
+    return { ...link, label: 'Purchase Amtrak ticket' };
+  }
+  const link = buildBusBookingLink('FlixBus', 'https://www.flixbus.com', {
+    originCity: opts.originCity,
+    destCity: opts.destCity,
+    departureIso: opts.departureIso,
+  });
+  return { ...link, label: 'Purchase bus ticket' };
+}
+
 /** Kayak rental-car search pre-filled with city + pickup/drop-off dates. */
 export function buildRentalCarLink(
   city: string,
