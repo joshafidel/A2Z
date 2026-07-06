@@ -10,10 +10,55 @@
  * offers into LineHaulOption. Keep bag fees from the ancillaries response.
  */
 
+import { findCityCoords, haversineMiles, nearestAirport } from '../data/airports';
 import type { CorridorKey } from '../data/cities';
 import type { ServiceResult } from '../types';
 import { apiConfig, fetchWithTimeout, mockDelay } from './config';
 import type { LineHaulOption } from './legTypes';
+
+/**
+ * Generate realistic flights between ANY two cities using real geography:
+ * nearest major airports + haversine distance drive duration and fares.
+ * This guarantees flights always populate, Miami included.
+ */
+export function generateFlights(originAddress: string, destAddress: string): LineHaulOption[] {
+  const from = findCityCoords(originAddress) ?? { city: 'New York', lat: 40.7128, lng: -74.006 };
+  const to = findCityCoords(destAddress);
+  if (!to) return []; // unknown destination city — flights can't be estimated
+
+  const origin = nearestAirport(from);
+  const dest = nearestAirport(to);
+  if (origin.code === dest.code) return []; // same airport → not a flight trip
+
+  const miles = haversineMiles(origin, dest);
+  // Real-world approximation: taxi+climb overhead + ~500 mph cruise.
+  const durationMinutes = Math.round(40 + miles / 8.3);
+  const baseFare = Math.round(59 + miles * 0.11);
+  const carriers = [
+    { provider: 'Delta', prefix: 'DL' },
+    { provider: 'American', prefix: 'AA' },
+    { provider: 'JetBlue', prefix: 'B6' },
+  ];
+
+  return carriers.map((carrier, i) => ({
+    id: `fl-gen-${origin.code}-${dest.code}-${i}`,
+    mode: 'flight' as const,
+    provider: carrier.provider,
+    serviceName: `${carrier.prefix} ${1200 + i * 341 + (miles % 97)}`,
+    fromStation: `${origin.name} (${origin.code})`,
+    toStation: `${dest.name} (${dest.code})`,
+    departOffsetMinutes: 150 + i * 45,
+    durationMinutes,
+    farePerPersonUsd: Math.round(baseFare * (1 + i * 0.12)),
+    bagFeeUsd: 35,
+    seatFeeUsd: 29,
+    reliabilityScore: 74 - i * 2,
+    comfortScore: 62,
+    baseDelayRisk: 0.28,
+    bookingUrl: 'https://www.google.com/travel/flights',
+    notes: [`${miles} mi nonstop`, 'Fare is an estimate — tap “Compare live fares” for today’s price'],
+  }));
+}
 
 /** IATA codes per corridor for live fare lookups + Google Flights links. */
 export const CORRIDOR_AIRPORTS: Partial<Record<CorridorKey, { origin: string; dest: string }>> = {
@@ -159,7 +204,7 @@ const FLIGHTS: Partial<Record<CorridorKey, LineHaulOption[]>> = {
 
 export async function searchFlights(
   corridor: CorridorKey,
-  opts: { departureIso?: string; travelers?: number } = {},
+  opts: { departureIso?: string; travelers?: number; originAddress?: string; destAddress?: string } = {},
 ): Promise<ServiceResult<LineHaulOption[]>> {
   // Live Amadeus fares when keys are configured (free tier).
   if (apiConfig.amadeusClientId && apiConfig.amadeusClientSecret && opts.departureIso) {
@@ -167,11 +212,15 @@ export async function searchFlights(
     if (live && live.length > 0) return { ok: true, data: live };
   }
 
-  await mockDelay();
+  await mockDelay(120);
 
   const options = FLIGHTS[corridor];
   if (!options) {
-    // Not an error — some corridors (e.g. Manhattan → JFK) simply have no flights.
+    // No curated corridor — generate flights from real geography so they
+    // always populate (nearest airports + great-circle distance).
+    if (opts.originAddress && opts.destAddress) {
+      return { ok: true, data: generateFlights(opts.originAddress, opts.destAddress) };
+    }
     return { ok: true, data: [] };
   }
   // Estimates until live keys are configured — booking links show live fares.

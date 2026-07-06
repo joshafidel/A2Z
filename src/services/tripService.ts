@@ -12,6 +12,7 @@
  * an unavailable provider simply contributes no routes.
  */
 
+import { findCityCoords, haversineMiles } from '../data/airports';
 import { CORRIDOR_CITIES, detectCityKey, resolveCorridor, WEATHER_CITY } from '../data/cities';
 import type { CorridorKey } from '../data/cities';
 import type {
@@ -56,6 +57,17 @@ import type { AccessOption } from './accessService';
 import { buildAirportIntel } from './tsaService';
 import { getWeather } from './weatherService';
 
+
+/**
+ * City name for weather lookups: curated corridors use their mapped city;
+ * anywhere else falls back to real geography (so Miami gets Miami's
+ * forecast, not New York's).
+ */
+function weatherCityFor(key: keyof typeof WEATHER_CITY, address: string): string {
+  if (key !== 'unknown') return WEATHER_CITY[key];
+  return findCityCoords(address)?.city ?? WEATHER_CITY.unknown;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -74,8 +86,8 @@ export async function searchRoutes(search: TripSearch): Promise<ServiceResult<Tr
 
   // Weather for both endpoints — failures are tolerated (warnings just drop out).
   const [originWx, destWx] = await Promise.all([
-    getWeather(WEATHER_CITY[originKey], search.departureTime),
-    getWeather(WEATHER_CITY[destKey], search.departureTime),
+    getWeather(weatherCityFor(originKey, search.origin.address), search.departureTime),
+    getWeather(weatherCityFor(destKey, search.destination.address), search.departureTime),
   ]);
   const originWeather = originWx.ok ? originWx.data : undefined;
   const destinationWeather = destWx.ok ? destWx.data : undefined;
@@ -83,10 +95,14 @@ export async function searchRoutes(search: TripSearch): Promise<ServiceResult<Tr
   const ctx: BuildContext = { search, corridor, originWeather, destinationWeather };
 
   try {
+    // Airport hops and known local corridors get the local treatment;
+    // everything else (curated NE corridors AND any generic city pair,
+    // e.g. NYC → Miami) goes through the full intercity comparison so
+    // flights always populate and trains appear where rail exists.
     const routes =
-      corridor === 'nyc-boston' || corridor === 'nyc-dc'
-        ? await buildIntercityRoutes(ctx)
-        : await buildLocalRoutes(ctx);
+      corridor === 'nyc-jfk' || corridor === 'nyc-ewr' || corridor === 'bosairport-boston'
+        ? await buildLocalRoutes(ctx)
+        : await buildIntercityRoutes(ctx);
 
     if (routes.length === 0) {
       return {
@@ -329,13 +345,18 @@ async function buildWalkAdvice(
 // ---------------------------------------------------------------------------
 
 async function buildIntercityRoutes(ctx: BuildContext): Promise<RouteOption[]> {
+  const addresses = {
+    originAddress: ctx.search.origin.address,
+    destAddress: ctx.search.destination.address,
+  };
   const [flights, trains, buses] = await Promise.all([
     searchFlights(ctx.corridor, {
       departureIso: ctx.search.departureTime,
       travelers: ctx.search.travelers,
+      ...addresses,
     }),
-    searchTrains(ctx.corridor),
-    searchBuses(ctx.corridor),
+    searchTrains(ctx.corridor, addresses),
+    searchBuses(ctx.corridor, addresses),
   ]);
 
   const routes: RouteOption[] = [];
@@ -391,11 +412,23 @@ async function buildRentalCarRoute(ctx: BuildContext): Promise<RouteOption | und
   });
   const offer = offers[0];
 
-  // The drive itself: live road routing when available, corridor mock otherwise.
+  // The drive itself: live road routing when available, then real-geography
+  // estimate, then the corridor mock.
   const mockDrive = await getLocalLegs(ctx.corridor, 'drive');
   const mockLeg = mockDrive.ok ? mockDrive.data.legs[0] : undefined;
-  const driveMinutes = rentals.data.drive?.durationMinutes ?? mockLeg?.durationMinutes ?? 120;
-  const driveMiles = rentals.data.drive?.distanceMiles ?? mockLeg?.distanceMiles ?? 80;
+  const fromCity = findCityCoords(search.origin.address);
+  const toCity = findCityCoords(search.destination.address);
+  const geoMiles = fromCity && toCity ? Math.round(haversineMiles(fromCity, toCity) * 1.2) : undefined;
+  const driveMinutes =
+    rentals.data.drive?.durationMinutes ??
+    (ctx.corridor === 'generic' && geoMiles ? Math.round((geoMiles / 58) * 60 + 20) : undefined) ??
+    mockLeg?.durationMinutes ??
+    120;
+  const driveMiles =
+    rentals.data.drive?.distanceMiles ??
+    (ctx.corridor === 'generic' ? geoMiles : undefined) ??
+    mockLeg?.distanceMiles ??
+    80;
   const fuelTolls = Math.round(driveMiles * 0.22 + 12); // fuel ≈$0.16/mi + tolls
 
   const leaveTime = search.departureTime;
@@ -947,6 +980,22 @@ async function buildDriveRoute(ctx: BuildContext, facet: string): Promise<RouteO
         ],
       },
     ];
+  } else if (!live.ok && ctx.corridor === 'generic' && legs.length === 1) {
+    // Offline fallback: real geography via great-circle distance.
+    const from = findCityCoords(search.origin.address);
+    const to = findCityCoords(search.destination.address);
+    if (from && to) {
+      const roadMiles = Math.round(haversineMiles(from, to) * 1.2);
+      legs = [
+        {
+          ...legs[0],
+          durationMinutes: Math.round((roadMiles / 58) * 60 + 20),
+          distanceMiles: roadMiles,
+          costUsd: Math.round(roadMiles * 0.22 + 10),
+          notes: [`~${roadMiles} road miles (estimated from geography)`],
+        },
+      ];
+    }
   }
 
   const leaveTime = search.departureTime;
@@ -1323,12 +1372,20 @@ export async function getTicketsForMode(
   mode: 'flight' | 'train' | 'bus',
   search: TripSearch,
 ): Promise<ServiceResult<TicketOption[]>> {
+  const addresses = {
+    originAddress: search.origin.address,
+    destAddress: search.destination.address,
+  };
   const result =
     mode === 'flight'
-      ? await searchFlights(corridor, { departureIso: search.departureTime, travelers: search.travelers })
+      ? await searchFlights(corridor, {
+          departureIso: search.departureTime,
+          travelers: search.travelers,
+          ...addresses,
+        })
       : mode === 'train'
-        ? await searchTrains(corridor)
-        : await searchBuses(corridor);
+        ? await searchTrains(corridor, addresses)
+        : await searchBuses(corridor, addresses);
   if (!result.ok) return result;
   if (result.data.length === 0) {
     return { ok: false, error: `No ${mode} service on this route.`, code: 'NOT_FOUND' };
@@ -1440,8 +1497,8 @@ export async function buildRouteForTicket(
   const originKey = detectCityKey(search.origin.address);
   const destKey = detectCityKey(search.destination.address);
   const [originWx, destWx] = await Promise.all([
-    getWeather(WEATHER_CITY[originKey], search.departureTime),
-    getWeather(WEATHER_CITY[destKey], search.departureTime),
+    getWeather(weatherCityFor(originKey, search.origin.address), search.departureTime),
+    getWeather(weatherCityFor(destKey, search.destination.address), search.departureTime),
   ]);
   const ctx: BuildContext = {
     search,
@@ -1508,8 +1565,8 @@ export async function rebuildRouteWithAccess(
   const originKey = detectCityKey(search.origin.address);
   const destKey = detectCityKey(search.destination.address);
   const [originWx, destWx] = await Promise.all([
-    getWeather(WEATHER_CITY[originKey], search.departureTime),
-    getWeather(WEATHER_CITY[destKey], search.departureTime),
+    getWeather(weatherCityFor(originKey, search.origin.address), search.departureTime),
+    getWeather(weatherCityFor(destKey, search.destination.address), search.departureTime),
   ]);
   const ctx: BuildContext = {
     search,

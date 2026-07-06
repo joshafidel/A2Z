@@ -442,6 +442,75 @@ const ACCESS: Record<string, LocalLeg[]> = {
   ],
 
   // --- Generic fallback corridor -------------------------------------------
+  'generic:to-airport': [
+    {
+      mode: 'drive',
+      title: 'Ride to the airport',
+      from: 'Origin',
+      to: 'Departure airport',
+      durationMinutes: 32,
+      distanceMiles: 11,
+      costUsd: 38,
+      provider: 'Uber',
+      notes: ['Typical city-to-airport run — traffic varies'],
+    },
+  ],
+  'generic:from-airport': [
+    {
+      mode: 'drive',
+      title: 'Ride to your destination',
+      from: 'Arrival airport',
+      to: 'Destination',
+      durationMinutes: 26,
+      distanceMiles: 9,
+      costUsd: 32,
+      provider: 'Uber',
+    },
+  ],
+  'generic:to-train': [
+    {
+      mode: 'walk',
+      title: 'Walk to the station',
+      from: 'Origin',
+      to: 'Downtown rail station',
+      durationMinutes: 12,
+      distanceMiles: 0.6,
+      costUsd: 0,
+    },
+  ],
+  'generic:from-train': [
+    {
+      mode: 'walk',
+      title: 'Walk to your destination',
+      from: 'Arrival station',
+      to: 'Destination',
+      durationMinutes: 12,
+      distanceMiles: 0.6,
+      costUsd: 0,
+    },
+  ],
+  'generic:to-bus': [
+    {
+      mode: 'walk',
+      title: 'Walk to the bus stop',
+      from: 'Origin',
+      to: 'Downtown bus stop',
+      durationMinutes: 10,
+      distanceMiles: 0.5,
+      costUsd: 0,
+    },
+  ],
+  'generic:from-bus': [
+    {
+      mode: 'walk',
+      title: 'Walk to your destination',
+      from: 'Arrival bus terminal',
+      to: 'Destination',
+      durationMinutes: 10,
+      distanceMiles: 0.5,
+      costUsd: 0,
+    },
+  ],
   'generic:drive': [
     {
       mode: 'drive',

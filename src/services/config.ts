@@ -46,7 +46,7 @@ export function liveDataEnabled(): boolean {
 }
 
 /** fetch with a timeout — live calls must fail fast into the mock fallback. */
-export async function fetchWithTimeout(url: string, ms = 6000, init?: RequestInit): Promise<Response> {
+export async function fetchWithTimeout(url: string, ms = 3500, init?: RequestInit): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   try {
@@ -57,6 +57,6 @@ export async function fetchWithTimeout(url: string, ms = 6000, init?: RequestIni
 }
 
 /** Simulated network latency so mock mode exercises real loading states. */
-export function mockDelay(ms = 350 + Math.random() * 500): Promise<void> {
+export function mockDelay(ms = 80 + Math.random() * 120): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

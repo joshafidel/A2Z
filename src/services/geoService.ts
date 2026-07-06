@@ -133,15 +133,29 @@ export async function drivingRoute(
   }
 }
 
-/** Geocode both ends and fetch the real driving route in one call. */
-export async function drivingRouteByAddress(
+type AddressRouteResult = ServiceResult<RoadRoute & { from: GeoPoint; to: GeoPoint }>;
+const routeInFlight = new Map<string, Promise<AddressRouteResult>>();
+
+/**
+ * Geocode both ends and fetch the real driving route in one call.
+ * De-duplicated: concurrent callers for the same pair share one request.
+ */
+export function drivingRouteByAddress(
   fromAddress: string,
   toAddress: string,
-): Promise<ServiceResult<RoadRoute & { from: GeoPoint; to: GeoPoint }>> {
-  const [from, to] = await Promise.all([geocode(fromAddress), geocode(toAddress)]);
-  if (!from.ok) return from;
-  if (!to.ok) return to;
-  const route = await drivingRoute(from.data, to.data);
-  if (!route.ok) return route;
-  return { ok: true, data: { ...route.data, from: from.data, to: to.data } };
+): Promise<AddressRouteResult> {
+  const key = `${fromAddress.toLowerCase()}|${toAddress.toLowerCase()}`;
+  const existing = routeInFlight.get(key);
+  if (existing) return existing;
+
+  const promise = (async (): Promise<AddressRouteResult> => {
+    const [from, to] = await Promise.all([geocode(fromAddress), geocode(toAddress)]);
+    if (!from.ok) return from;
+    if (!to.ok) return to;
+    const route = await drivingRoute(from.data, to.data);
+    if (!route.ok) return route;
+    return { ok: true, data: { ...route.data, from: from.data, to: to.data } };
+  })();
+  routeInFlight.set(key, promise);
+  return promise;
 }

@@ -47,6 +47,12 @@ const RIDE_STATS: Record<string, { miles: number; minutes: number; from: string;
   'nyc-dc:from-airport': { miles: 4.5, minutes: 17, from: 'DCA Terminal 2', to: 'Downtown DC hotel', airport: true },
   'nyc-dc:to-bus': { miles: 3.1, minutes: 18, from: 'Home (Upper West Side)', to: '31st St & 8th Ave' },
   'nyc-dc:from-bus': { miles: 0.9, minutes: 8, from: 'Union Station Bus Terminal', to: 'Downtown DC hotel' },
+  'generic:to-airport': { miles: 11, minutes: 32, from: 'Origin', to: 'Departure airport', airport: true },
+  'generic:from-airport': { miles: 9, minutes: 26, from: 'Arrival airport', to: 'Destination', airport: true },
+  'generic:to-train': { miles: 2.5, minutes: 12, from: 'Origin', to: 'Downtown rail station' },
+  'generic:from-train': { miles: 2.5, minutes: 12, from: 'Arrival station', to: 'Destination' },
+  'generic:to-bus': { miles: 2, minutes: 10, from: 'Origin', to: 'Downtown bus stop' },
+  'generic:from-bus': { miles: 2, minutes: 10, from: 'Arrival bus terminal', to: 'Destination' },
 };
 
 let seq = 0;

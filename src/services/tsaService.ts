@@ -29,16 +29,25 @@ const AIRPORTS: Record<string, AirportProfile> = {
   DCA: { name: 'Reagan National Airport', baseWait: [10, 20], peakExtra: 10, busy: false },
 };
 
+/** Sensible defaults for airports without a curated wait profile. */
+function profileFor(airportCode: string): AirportProfile {
+  return (
+    AIRPORTS[airportCode] ?? {
+      name: `${airportCode} Airport`,
+      baseWait: [14, 26],
+      peakExtra: 10,
+      busy: false,
+    }
+  );
+}
+
 export async function getTsaEstimate(
   airportCode: string,
   departureIso: string,
 ): Promise<ServiceResult<{ min: number; max: number }>> {
-  await mockDelay(150);
+  await mockDelay(80);
 
-  const profile = AIRPORTS[airportCode];
-  if (!profile) {
-    return { ok: false, error: `No TSA data for ${airportCode}`, code: 'NOT_FOUND' };
-  }
+  const profile = profileFor(airportCode);
 
   const hour = new Date(departureIso).getHours();
   const isPeak = (hour >= 6 && hour <= 9) || (hour >= 16 && hour <= 19);
@@ -60,10 +69,7 @@ export async function buildAirportIntel(params: {
   const { airportCode, flightDepartureIso, travelMinutesToAirport, checkedBags, international } =
     params;
 
-  const profile = AIRPORTS[airportCode];
-  if (!profile) {
-    return { ok: false, error: `Unknown airport ${airportCode}`, code: 'NOT_FOUND' };
-  }
+  const profile = profileFor(airportCode);
 
   const tsa = await getTsaEstimate(airportCode, flightDepartureIso);
   const tsaWait = tsa.ok ? tsa.data : { min: 15, max: 30 };

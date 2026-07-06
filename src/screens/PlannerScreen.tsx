@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Linking, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppButton } from '../components/AppButton';
@@ -241,38 +241,59 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     if (step !== 'mode' || !results || !search) return;
     let cancelled = false;
     (async () => {
+      // All groups load in parallel so the stats appear together, fast.
+      const entries = await Promise.all(
+        grouped.map(async (g) => {
+          if (g.lineHaulMode) {
+            const board = await getTicketsForMode(results.corridor, g.lineHaulMode, search);
+            if (board.ok) {
+              // Door-to-door overhead = representative route minus its haul leg.
+              const rep = g.routes[0];
+              const haulSeg = rep.segments.find((s2) => s2.mode === g.lineHaulMode);
+              const overhead = rep.totalDurationMinutes - (haulSeg?.durationMinutes ?? 0);
+              return { key: g.key, board: board.data, stats: statsFromTickets(board.data, overhead) };
+            }
+          }
+          return { key: g.key, board: undefined, stats: statsFromRoutes(g.routes) };
+        }),
+      );
+      if (cancelled) return;
       const stats: Partial<Record<GroupKey, ModeStats>> = {};
       const boards: Partial<Record<GroupKey, TicketOption[]>> = {};
-      for (const g of grouped) {
-        if (g.lineHaulMode) {
-          const board = await getTicketsForMode(results.corridor, g.lineHaulMode, search);
-          if (board.ok) {
-            boards[g.key] = board.data;
-            // Door-to-door overhead = representative route minus its haul leg.
-            const rep = g.routes[0];
-            const haulSeg = rep.segments.find((s2) => s2.mode === g.lineHaulMode);
-            const overhead = rep.totalDurationMinutes - (haulSeg?.durationMinutes ?? 0);
-            stats[g.key] = statsFromTickets(board.data, overhead);
-          } else {
-            stats[g.key] = statsFromRoutes(g.routes);
-          }
-        } else {
-          stats[g.key] = statsFromRoutes(g.routes);
-        }
+      for (const e of entries) {
+        stats[e.key] = e.stats;
+        if (e.board) boards[e.key] = e.board;
       }
-      if (!cancelled) {
-        setTicketBoards(boards);
-        setModeStats(stats);
-      }
+      setTicketBoards(boards);
+      setModeStats(stats);
     })();
     return () => {
       cancelled = true;
     };
   }, [step, results, search, grouped]);
 
-  // --- Hotels ---------------------------------------------------------------
+  // Fast path: if the user picks a mode before the stats pass finished,
+  // fetch that mode's board directly so the ticket screen never stalls.
   useEffect(() => {
-    if (step !== 'hotel' || !search) return;
+    if (step !== 'tickets' || !results || !search || !chosenGroupDef?.lineHaulMode) return;
+    if (ticketBoards[chosenGroupDef.key]) return;
+    let cancelled = false;
+    (async () => {
+      const board = await getTicketsForMode(results.corridor, chosenGroupDef.lineHaulMode!, search);
+      if (!cancelled && board.ok) {
+        setTicketBoards((prev) => ({ ...prev, [chosenGroupDef.key]: board.data }));
+      }
+      if (!cancelled && !board.ok) setStepError(board.error);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [step, results, search, chosenGroupDef, ticketBoards]);
+
+  // --- Hotels (prefetched while the user is still picking a ticket) --------
+  useEffect(() => {
+    if (!needHotel || !search) return;
+    if (step !== 'hotel' && step !== 'tickets') return;
     let cancelled = false;
     (async () => {
       const cityKey = detectCityKey(search.destination.address);
@@ -290,10 +311,10 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     };
   }, [step, search, purpose, group]);
 
-  // --- Access options --------------------------------------------------------
+  // --- Access options (prefetched in parallel from the ticket step on) ------
   useEffect(() => {
     if (!results || !search || !chosenGroupDef?.lineHaulMode) return;
-    if (step !== 'firstMile' && step !== 'lastMile') return;
+    if (!['tickets', 'hotel', 'firstMile', 'lastMile'].includes(step)) return;
     const facets: Record<string, [string, string]> = {
       flight: ['to-airport', 'from-airport'],
       train: ['to-train', 'from-train'],
@@ -302,15 +323,22 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     const [accessFacet, egressFacet] = facets[chosenGroupDef.lineHaulMode];
     let cancelled = false;
     (async () => {
-      if (step === 'firstMile' && !firstOptions) {
-        const r = await getAccessOptions(results.corridor, accessFacet, search, results.originWeather);
-        if (!cancelled && r.ok) setFirstOptions(r.data);
-        if (!cancelled && !r.ok) setStepError(r.error);
+      const [first, last] = await Promise.all([
+        firstOptions
+          ? undefined
+          : getAccessOptions(results.corridor, accessFacet, search, results.originWeather),
+        lastOptions
+          ? undefined
+          : getAccessOptions(results.corridor, egressFacet, search, results.destinationWeather),
+      ]);
+      if (cancelled) return;
+      if (first) {
+        if (first.ok) setFirstOptions(first.data);
+        else if (step === 'firstMile') setStepError(first.error);
       }
-      if (step === 'lastMile' && !lastOptions) {
-        const r = await getAccessOptions(results.corridor, egressFacet, search, results.destinationWeather);
-        if (!cancelled && r.ok) setLastOptions(r.data);
-        if (!cancelled && !r.ok) setStepError(r.error);
+      if (last) {
+        if (last.ok) setLastOptions(last.data);
+        else if (step === 'lastMile') setStepError(last.error);
       }
     })();
     return () => {
@@ -496,16 +524,18 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
 
         {which === 'destination' && (
           <Card style={styles.hotelAsk}>
-            <View style={styles.hotelAskRow}>
+            <Pressable
+              onPress={() => setNeedHotel((v) => !v)}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: needHotel }}
+              style={styles.hotelAskRow}
+            >
+              <View style={[styles.checkbox, needHotel && styles.checkboxChecked]}>
+                {needHotel && <Ionicons name="checkmark" size={15} color="#FFFFFF" />}
+              </View>
               <Ionicons name="bed" size={18} color={colors.primary} />
               <Text style={styles.hotelAskText}>I need a hotel there</Text>
-              <Switch
-                value={needHotel}
-                onValueChange={setNeedHotel}
-                trackColor={{ true: colors.primary, false: colors.border }}
-                thumbColor="#FFFFFF"
-              />
-            </View>
+            </Pressable>
             <Text style={styles.hotelAskHint}>
               We'll show stays matched to your trip right after you pick your ticket.
             </Text>
@@ -1029,8 +1059,19 @@ const styles = StyleSheet.create({
   saveHomeRow: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 36 },
   saveHomeText: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
   hotelAsk: { gap: spacing.xs },
-  hotelAskRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  hotelAskText: { flex: 1, ...typography.bodyMedium, color: colors.text },
+  hotelAskRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, minHeight: 32 },
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 7,
+    borderWidth: 2,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxChecked: { backgroundColor: colors.primary, borderColor: colors.primary },
+  hotelAskText: { ...typography.bodyMedium, color: colors.text },
   hotelAskHint: { fontSize: 12, color: colors.textMuted, lineHeight: 16 },
   subLabel: { ...typography.micro, color: colors.textMuted },
   countRow: { flexDirection: 'row', gap: spacing.md },

@@ -63,7 +63,13 @@ describe('ticket boards', () => {
   });
 
   it('errors cleanly for a mode with no service', async () => {
-    const board = await getTicketsForMode('bosairport-boston', 'train', SEARCH);
+    // Phoenix ↔ Las Vegas has no useful rail — the board must say so.
+    const noRail: TripSearch = {
+      ...SEARCH,
+      origin: { address: 'Phoenix, AZ', label: 'Home' },
+      destination: { address: 'The Strip, Las Vegas, NV', label: 'Las Vegas' },
+    };
+    const board = await getTicketsForMode('generic', 'train', noRail);
     expect(board.ok).toBe(false);
   });
 

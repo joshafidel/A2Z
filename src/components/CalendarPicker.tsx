@@ -121,51 +121,53 @@ export function CalendarPicker({ selected, onSelect, maxDaysAhead = 365 }: Calen
 }
 
 const styles = StyleSheet.create({
+  // Compact layout: the whole month + the rest of the date step fit on
+  // one phone screen without scrolling.
   card: {
     backgroundColor: colors.surface,
-    borderRadius: radii.lg,
+    borderRadius: radii.md,
     borderWidth: 1,
     borderColor: colors.border,
-    padding: spacing.lg,
+    padding: spacing.md,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: spacing.md,
+    marginBottom: spacing.xs,
   },
   navButton: {
-    width: 40,
-    height: 40,
+    width: 34,
+    height: 34,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  monthLabel: { ...typography.heading, color: colors.ink },
-  weekRow: { flexDirection: 'row', marginBottom: spacing.xs },
+  monthLabel: { ...typography.bodyMedium, fontSize: 15, color: colors.ink },
+  weekRow: { flexDirection: 'row', marginBottom: 2 },
   weekday: {
     flex: 1,
     textAlign: 'center',
-    fontSize: 12,
+    fontSize: 10,
     fontWeight: '700',
     color: colors.textMuted,
   },
   grid: { flexDirection: 'row', flexWrap: 'wrap' },
   cell: {
     width: `${100 / 7}%`,
-    aspectRatio: 1,
+    height: 34,
     alignItems: 'center',
     justifyContent: 'center',
   },
   day: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     alignItems: 'center',
     justifyContent: 'center',
   },
   dayToday: { borderWidth: 1.5, borderColor: colors.primary },
   daySelected: { backgroundColor: colors.primary },
-  dayText: { fontSize: 15, fontWeight: '600', color: colors.text },
+  dayText: { fontSize: 13, fontWeight: '600', color: colors.text },
   dayTextSelected: { color: '#FFFFFF' },
   dayDisabled: { color: colors.border },
 });
