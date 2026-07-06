@@ -16,6 +16,14 @@ export type ApiMode = 'mock' | 'live';
 export const apiConfig = {
   mode: (process.env.EXPO_PUBLIC_API_MODE === 'live' ? 'live' : 'mock') as ApiMode,
 
+  /**
+   * Keyless live data (Open-Meteo weather, OSRM routing, Nominatim
+   * geocoding). On by default — these are free, CORS-enabled APIs called
+   * from the visitor's browser. Set EXPO_PUBLIC_LIVE_DATA=off to force
+   * mock-only mode (e.g. for deterministic demos).
+   */
+  liveData: process.env.EXPO_PUBLIC_LIVE_DATA !== 'off',
+
   openWeatherApiKey: process.env.EXPO_PUBLIC_OPENWEATHER_API_KEY ?? '',
   googleMapsApiKey: process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ?? '',
   amadeusClientId: process.env.EXPO_PUBLIC_AMADEUS_CLIENT_ID ?? '',
@@ -30,6 +38,22 @@ export const apiConfig = {
 /** True when a given integration should use its live API. */
 export function isLive(key: keyof typeof apiConfig): boolean {
   return apiConfig.mode === 'live' && Boolean(apiConfig[key]);
+}
+
+/** True when keyless live data sources should be attempted. */
+export function liveDataEnabled(): boolean {
+  return apiConfig.liveData;
+}
+
+/** fetch with a timeout — live calls must fail fast into the mock fallback. */
+export async function fetchWithTimeout(url: string, ms = 6000, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Simulated network latency so mock mode exercises real loading states. */

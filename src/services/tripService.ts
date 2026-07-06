@@ -12,7 +12,7 @@
  * an unavailable provider simply contributes no routes.
  */
 
-import { CITY_NAMES, detectCityKey, resolveCorridor, WEATHER_CITY } from '../data/cities';
+import { CORRIDOR_CITIES, detectCityKey, resolveCorridor, WEATHER_CITY } from '../data/cities';
 import type { CorridorKey } from '../data/cities';
 import type {
   BackupPlan,
@@ -35,13 +35,17 @@ import {
   buildAirlineBookingLink,
   buildAppleMapsLink,
   buildBusBookingLink,
+  buildFlightSearchLink,
   buildGoogleMapsLink,
   buildLyftLink,
+  buildRentalCarLink,
   buildTrainBookingLink,
   buildTransitAppLink,
   buildUberLink,
 } from './deepLinkService';
 import { searchFlights } from './flightService';
+import { drivingRouteByAddress } from './geoService';
+import { searchRentalCars } from './rentalCarService';
 import type { LineHaulOption } from './legTypes';
 import { getLocalLegs } from './mapsService';
 import type { LocalLeg } from './mapsService';
@@ -326,7 +330,10 @@ async function buildWalkAdvice(
 
 async function buildIntercityRoutes(ctx: BuildContext): Promise<RouteOption[]> {
   const [flights, trains, buses] = await Promise.all([
-    searchFlights(ctx.corridor),
+    searchFlights(ctx.corridor, {
+      departureIso: ctx.search.departureTime,
+      travelers: ctx.search.travelers,
+    }),
     searchTrains(ctx.corridor),
     searchBuses(ctx.corridor),
   ]);
@@ -352,10 +359,140 @@ async function buildIntercityRoutes(ctx: BuildContext): Promise<RouteOption[]> {
     }
   }
 
-  const drive = await buildDriveRoute(ctx, 'drive');
+  const [drive, rental] = await Promise.all([
+    buildDriveRoute(ctx, 'drive'),
+    buildRentalCarRoute(ctx),
+  ]);
   if (drive) routes.push(drive);
+  if (rental) routes.push(rental);
 
   return routes;
+}
+
+/**
+ * Rental car door-to-door: get to the pickup office (walk/transit),
+ * pick up the car, drive (real road time via OSRM when reachable),
+ * priced per day + fuel/tolls, with dated Kayak booking links.
+ */
+async function buildRentalCarRoute(ctx: BuildContext): Promise<RouteOption | undefined> {
+  const { search } = ctx;
+  const rentals = await searchRentalCars(
+    ctx.corridor,
+    search.origin.address,
+    search.destination.address,
+  );
+  if (!rentals.ok || rentals.data.offers.length === 0) return undefined;
+
+  // Best offer = shortest total access time, then price.
+  const offers = [...rentals.data.offers].sort((a, b) => {
+    const aAccess = a.accessLegs.reduce((s, l) => s + l.durationMinutes, 0);
+    const bAccess = b.accessLegs.reduce((s, l) => s + l.durationMinutes, 0);
+    return aAccess - bAccess || a.dailyRateUsd - b.dailyRateUsd;
+  });
+  const offer = offers[0];
+
+  // The drive itself: live road routing when available, corridor mock otherwise.
+  const mockDrive = await getLocalLegs(ctx.corridor, 'drive');
+  const mockLeg = mockDrive.ok ? mockDrive.data.legs[0] : undefined;
+  const driveMinutes = rentals.data.drive?.durationMinutes ?? mockLeg?.durationMinutes ?? 120;
+  const driveMiles = rentals.data.drive?.distanceMiles ?? mockLeg?.distanceMiles ?? 80;
+  const fuelTolls = Math.round(driveMiles * 0.22 + 12); // fuel ≈$0.16/mi + tolls
+
+  const leaveTime = search.departureTime;
+  const segments: RouteSegment[] = [];
+  let cursor = leaveTime;
+  for (const leg of offer.accessLegs) {
+    const seg = localLegToSegment(leg, cursor, search.travelers);
+    segments.push(seg);
+    cursor = seg.arrivalTime;
+  }
+  segments.push({
+    id: segId(),
+    mode: 'wait',
+    title: `Pick up car at ${offer.officeName}`,
+    from: offer.officeAddress,
+    to: offer.officeAddress,
+    departureTime: cursor,
+    arrivalTime: addMinutes(cursor, offer.pickupProcessMinutes),
+    durationMinutes: offer.pickupProcessMinutes,
+    costUsd: 0,
+    notes: [offer.carClass],
+  });
+  cursor = addMinutes(cursor, offer.pickupProcessMinutes);
+  segments.push({
+    id: segId(),
+    mode: 'drive',
+    title: `Drive rental to ${search.destination.label ?? 'destination'}`,
+    from: offer.officeName,
+    to: search.destination.label ?? search.destination.address,
+    departureTime: cursor,
+    arrivalTime: addMinutes(cursor, driveMinutes),
+    durationMinutes: driveMinutes,
+    distanceMiles: driveMiles,
+    costUsd: fuelTolls,
+    provider: offer.company,
+    notes: rentals.data.drive?.live
+      ? [`Real road route: ${driveMiles} mi, ${formatDuration(driveMinutes)}`]
+      : undefined,
+  });
+  cursor = addMinutes(cursor, driveMinutes);
+
+  const items: PriceLineItem[] = [
+    {
+      label: `${offer.company} rental (1 day, ${offer.carClass.split('·')[0].trim()})`,
+      amountUsd: offer.dailyRateUsd,
+      kind: 'ticket',
+      note: offer.notes[0],
+    },
+    { label: 'Fuel + tolls (est.)', amountUsd: fuelTolls, kind: 'fuel', hidden: true },
+    ...offer.accessLegs
+      .filter((l) => l.costUsd > 0)
+      .map((l) => ({
+        label: `${l.provider ?? 'Transit'} fare ×${search.travelers}`,
+        amountUsd: l.costUsd * search.travelers,
+        kind: 'transit' as const,
+        hidden: true,
+      })),
+  ];
+
+  const walkingMinutes = sumWalkingMinutes(segments);
+  const warnings = weatherWarningsFor(ctx, { walkingMinutes, usesFlight: false, usesRoad: true });
+  const wxDelay = Math.max(
+    ctx.originWeather?.delayImpact ?? 0,
+    ctx.destinationWeather?.delayImpact ?? 0,
+  );
+
+  return finalizeRoute(ctx, {
+    id: `route-rental-${ctx.corridor}`,
+    title: `Rent with ${offer.company}`,
+    summary: `${offer.accessLegs.map((l) => (l.mode === 'walk' ? 'Walk' : 'Subway')).join(' → ')} → pick up car → drive`,
+    segments,
+    timeline: buildTimeline(segments, search.destination.label ?? 'destination'),
+    items,
+    links: [
+      buildRentalCarLink(rentals.data.cityLabel, search.departureTime),
+      buildGoogleMapsLink(search.origin.address, offer.officeAddress, 'transit'),
+      buildAppleMapsLink(search.origin.address, offer.officeAddress, 'transit'),
+      buildGoogleMapsLink(offer.officeAddress, search.destination.address, 'drive'),
+    ],
+    walkingMinutes,
+    warnings,
+    reliability: 78,
+    comfort: 82,
+    delayRisk: Math.min(0.9, 0.25 + wxDelay * 0.3),
+    leaveTime,
+    arrivalTime: cursor,
+    totalDuration: minutesBetween(leaveTime, cursor),
+    bufferMinutes: offer.pickupProcessMinutes,
+    primaryMode: 'drive',
+    backups: offers.slice(1, 3).map((alt) => ({
+      id: `bk-rental-${alt.company.toLowerCase()}`,
+      title: `${alt.company} — $${alt.dailyRateUsd}/day`,
+      description: `${alt.officeName} (${alt.accessLegs.reduce((s, l) => s + l.durationMinutes, 0)} min away) · ${alt.carClass}`,
+      mode: 'drive' as const,
+      extraCostUsd: alt.dailyRateUsd - offer.dailyRateUsd,
+    })),
+  });
 }
 
 /** Chosen first/last-mile overrides coming from the trip builder. */
@@ -469,10 +606,16 @@ async function buildLineHaulRoute(
     });
   }
 
+  const cities = CORRIDOR_CITIES[ctx.corridor];
+  const linkOpts = {
+    originCity: cities?.origin,
+    destCity: cities?.dest,
+    departureIso: search.departureTime,
+  };
   const links: BookingLink[] = [
     haul.mode === 'train'
-      ? buildTrainBookingLink(haul.provider, haul.bookingUrl)
-      : buildBusBookingLink(haul.provider, haul.bookingUrl),
+      ? buildTrainBookingLink(haul.provider, haul.bookingUrl, linkOpts)
+      : buildBusBookingLink(haul.provider, haul.bookingUrl, linkOpts),
     buildGoogleMapsLink(search.origin.address, haul.fromStation, 'transit'),
     buildAppleMapsLink(search.origin.address, haul.fromStation, 'transit'),
     buildTransitAppLink(search.origin.address, haul.fromStation),
@@ -719,7 +862,9 @@ async function buildFlightRoute(
     });
   }
 
+  const destCode = flight.toStation.match(/\(([A-Z]{3})\)/)?.[1] ?? 'BOS';
   const links: BookingLink[] = [
+    buildFlightSearchLink(airportCode, destCode, flightDeparture),
     buildAirlineBookingLink(flight.provider, flight.bookingUrl),
     buildUberLink(search.origin.address, flight.fromStation),
     buildLyftLink(search.origin.address, flight.fromStation),
@@ -784,17 +929,37 @@ async function buildDriveRoute(ctx: BuildContext, facet: string): Promise<RouteO
   const drive = await getLocalLegs(ctx.corridor, facet);
   if (!drive.ok) return undefined;
 
+  // Real road distance/time (OSRM) replaces the mock estimate when the
+  // live routing API is reachable — especially important for the generic
+  // corridor where we have no curated data.
+  let legs = drive.data.legs;
+  const live = await drivingRouteByAddress(search.origin.address, search.destination.address);
+  if (live.ok && legs.length === 1) {
+    legs = [
+      {
+        ...legs[0],
+        durationMinutes: live.data.durationMinutes,
+        distanceMiles: live.data.distanceMiles,
+        costUsd: Math.round(live.data.distanceMiles * 0.22 + 10),
+        notes: [
+          `Real road route: ${live.data.distanceMiles} mi, ${formatDuration(live.data.durationMinutes)}`,
+          ...(legs[0].notes ?? []),
+        ],
+      },
+    ];
+  }
+
   const leaveTime = search.departureTime;
   const segments: RouteSegment[] = [];
   let cursor = leaveTime;
-  for (const leg of drive.data.legs) {
+  for (const leg of legs) {
     const seg = localLegToSegment(leg, cursor, search.travelers);
     segments.push(seg);
     cursor = seg.arrivalTime;
   }
 
-  const items: PriceLineItem[] = drive.data.legs.map((leg) => ({
-    label: leg.notes?.[0] ?? `Fuel + tolls (${leg.title})`,
+  const items: PriceLineItem[] = legs.map((leg) => ({
+    label: leg.notes?.find((n) => n.startsWith('~')) ?? `Fuel + tolls (${leg.title})`,
     amountUsd: leg.costUsd,
     kind: 'fuel' as const,
   }));
@@ -867,8 +1032,16 @@ async function buildLocalRoutes(ctx: BuildContext): Promise<RouteOption[]> {
     if (route) routes.push(route);
   }
 
-  const rideshare = await buildRideshareRoute(ctx);
-  if (rideshare) routes.push(rideshare);
+  // Airport hops keep the door-to-door rideshare option (a rental makes no
+  // sense for a 30-minute airport run); the generic corridor gets a rental
+  // car instead, including the legs to reach the pickup office.
+  if (ctx.corridor === 'generic') {
+    const rental = await buildRentalCarRoute(ctx);
+    if (rental) routes.push(rental);
+  } else {
+    const rideshare = await buildRideshareRoute(ctx);
+    if (rideshare) routes.push(rideshare);
+  }
 
   const drive = await buildDriveRoute(ctx, 'drive');
   if (drive) routes.push(drive);

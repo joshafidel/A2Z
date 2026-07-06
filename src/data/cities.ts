@@ -55,6 +55,22 @@ export const WEATHER_CITY: Record<CityKey, string> = {
   unknown: 'New York',
 };
 
+/** Human city names per corridor for live-fare search links (Wanderu etc.). */
+export const CORRIDOR_CITIES: Partial<
+  Record<
+    | 'nyc-boston'
+    | 'nyc-dc'
+    | 'nyc-jfk'
+    | 'nyc-ewr'
+    | 'bosairport-boston'
+    | 'generic',
+    { origin: string; dest: string }
+  >
+> = {
+  'nyc-boston': { origin: 'New York, NY', dest: 'Boston, MA' },
+  'nyc-dc': { origin: 'New York, NY', dest: 'Washington, DC' },
+};
+
 export type CorridorKey =
   | 'nyc-boston'
   | 'nyc-dc'

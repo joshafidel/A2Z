@@ -4,13 +4,14 @@ import { Linking, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { AppButton } from '../components/AppButton';
 import { Card } from '../components/Card';
+import { Chip } from '../components/Chip';
 import { EmptyState, ErrorState, LoadingState } from '../components/States';
 import { useTrip } from '../context/TripContext';
 import { detectCityKey, CITY_NAMES } from '../data/cities';
 import type { HotelsScreenProps } from '../navigation/types';
 import { getHotelRecommendations } from '../services/hotelService';
 import { colors, radii, spacing, typography } from '../theme';
-import type { HotelOption } from '../types';
+import { TRIP_PURPOSE_LABELS, type HotelOption, type TripPurpose } from '../types';
 
 /**
  * Hotel recommendations shown after a trip is saved — positioned around
@@ -25,9 +26,13 @@ export function HotelsScreen({ navigation }: HotelsScreenProps) {
     (activeTrip?.route.primaryMode ?? 'train') === 'flight' ||
     /airport|jfk|ewr|logan/i.test(destinationAddress);
 
+  const checkinIso =
+    search?.departureTime ?? activeTrip?.search.departureTime ?? new Date().toISOString();
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [hotels, setHotels] = useState<HotelOption[]>([]);
+  const [purpose, setPurpose] = useState<TripPurpose>();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -36,15 +41,34 @@ export function HotelsScreen({ navigation }: HotelsScreenProps) {
     const result = await getHotelRecommendations(cityKey, {
       arrivingByAir,
       destinationQuery: destinationAddress,
+      purpose,
+      checkinIso,
+      nights: 1,
     });
     if (result.ok) setHotels(result.data);
     else setError(result.error);
     setLoading(false);
-  }, [destinationAddress, arrivingByAir]);
+  }, [destinationAddress, arrivingByAir, purpose, checkinIso]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  const purposeChips = (
+    <View style={styles.purposeBlock}>
+      <Text style={styles.purposeLabel}>WHAT'S THE OCCASION?</Text>
+      <View style={styles.purposeRow}>
+        {(Object.keys(TRIP_PURPOSE_LABELS) as TripPurpose[]).map((p) => (
+          <Chip
+            key={p}
+            label={TRIP_PURPOSE_LABELS[p]}
+            selected={purpose === p}
+            onPress={() => setPurpose((prev) => (prev === p ? undefined : p))}
+          />
+        ))}
+      </View>
+    </View>
+  );
 
   if (loading) return <LoadingState message="Finding places to stay near your destination…" />;
   if (error) return <ErrorState message={error} onRetry={load} />;
@@ -71,11 +95,23 @@ export function HotelsScreen({ navigation }: HotelsScreenProps) {
       >
         <Text style={styles.intro}>
           Stays near {cityName === 'your area' ? 'your destination' : cityName}
-          {arrivingByAir ? ' — airport-friendly options first since you arrive by air.' : ', sorted by rating.'}
+          {purpose
+            ? ` — matched to your ${TRIP_PURPOSE_LABELS[purpose].toLowerCase()} trip.`
+            : arrivingByAir
+              ? ' — airport-friendly options first since you arrive by air.'
+              : ', sorted by rating.'}
         </Text>
+
+        {purposeChips}
 
         {hotels.map((h) => (
           <Card key={h.id} style={styles.hotelCard}>
+            {h.whyRecommended ? (
+              <View style={styles.whyRow}>
+                <Ionicons name="sparkles" size={13} color={colors.primary} />
+                <Text style={styles.whyText}>{h.whyRecommended}</Text>
+              </View>
+            ) : null}
             <View style={styles.headerRow}>
               <View style={styles.flex}>
                 <Text style={styles.name}>{h.name}</Text>
@@ -137,6 +173,24 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   content: { padding: spacing.lg, gap: spacing.lg, paddingBottom: 110 },
   intro: { fontSize: 14, color: colors.textSecondary, lineHeight: 20 },
+  purposeBlock: { gap: spacing.sm },
+  purposeLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    color: colors.textMuted,
+  },
+  purposeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  whyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.primarySoft,
+    borderRadius: radii.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  whyText: { flex: 1, fontSize: 12, fontWeight: '600', color: colors.primary },
   hotelCard: { gap: spacing.md },
   headerRow: { flexDirection: 'row', gap: spacing.md },
   name: { ...typography.heading, color: colors.ink },

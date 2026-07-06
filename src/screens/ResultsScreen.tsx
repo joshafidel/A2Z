@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { RouteCard } from '../components/RouteCard';
 import { EmptyState, ErrorState, LoadingState } from '../components/States';
@@ -48,13 +48,14 @@ const GROUPS: Array<{
 ];
 
 export function ResultsScreen({ navigation, route }: ResultsScreenProps) {
-  const { search } = route.params;
+  const { search, guided } = route.params;
   const { setSearchResults } = useTrip();
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [results, setResults] = useState<TripSearchResults>();
   const [expanded, setExpanded] = useState<Set<GroupKey>>(new Set());
+  const [modePicker, setModePicker] = useState(false);
 
   const run = useCallback(async () => {
     setLoading(true);
@@ -67,11 +68,13 @@ export function ResultsScreen({ navigation, route }: ResultsScreenProps) {
       const best = result.data.routes.find((r) => r.badges.includes('best-overall'));
       const bestGroup = best ? GROUPS.find((g) => g.match(best))?.key : undefined;
       setExpanded(new Set(bestGroup ? [bestGroup] : []));
+      // Guided flow: pop up "How do you want to get there?" right away.
+      if (guided) setModePicker(true);
     } else {
       setError(result.error);
     }
     setLoading(false);
-  }, [search, setSearchResults]);
+  }, [search, guided, setSearchResults]);
 
   useEffect(() => {
     run();
@@ -119,6 +122,18 @@ export function ResultsScreen({ navigation, route }: ResultsScreenProps) {
     else navigation.navigate('RouteDetail', { routeId: r.id });
   };
 
+  const pickMode = (key: GroupKey) => {
+    setModePicker(false);
+    const group = grouped.find((g) => g.key === key);
+    if (!group) return;
+    if (group.routes.length === 1) {
+      // Only one way to do it — jump straight into the next step.
+      openRoute(group.routes[0]);
+    } else {
+      setExpanded(new Set([key]));
+    }
+  };
+
   return (
     <ScrollView
       style={styles.flex}
@@ -138,6 +153,52 @@ export function ResultsScreen({ navigation, route }: ResultsScreenProps) {
       </View>
 
       <WeatherCard origin={results.originWeather} destination={results.destinationWeather} />
+
+      {/* Guided flow popup: pick the main travel method first */}
+      <Modal
+        visible={modePicker}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setModePicker(false)}
+      >
+        <View style={styles.pickerBackdrop}>
+          <View style={styles.pickerSheet}>
+            <Text style={styles.pickerTitle}>How do you want to get there?</Text>
+            <Text style={styles.pickerSubtitle}>
+              Pick your main travel method — then we'll ask how you want to reach the station or
+              airport.
+            </Text>
+            {grouped.map((g) => {
+              const prices = g.routes
+                .map((r) => r.totalPriceUsd)
+                .filter((p): p is number => p !== undefined);
+              const fastest = Math.min(...g.routes.map((r) => r.totalDurationMinutes));
+              return (
+                <Pressable
+                  key={g.key}
+                  onPress={() => pickMode(g.key)}
+                  style={({ pressed }) => [styles.pickerRow, pressed && styles.pressed]}
+                >
+                  <View style={styles.groupIcon}>
+                    <Ionicons name={g.icon} size={18} color={colors.primary} />
+                  </View>
+                  <View style={styles.flex1}>
+                    <Text style={styles.pickerRowTitle}>{g.title}</Text>
+                    <Text style={styles.pickerRowMeta}>
+                      {prices.length > 0 ? `from ${formatMoney(Math.min(...prices))} · ` : ''}
+                      fastest {formatDuration(fastest)}
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+                </Pressable>
+              );
+            })}
+            <Pressable onPress={() => setModePicker(false)} style={styles.pickerSkip}>
+              <Text style={styles.pickerSkipText}>Let me browse everything instead</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       {/* Recommendation summary */}
       {best?.score?.explanation ? (
@@ -167,7 +228,7 @@ export function ResultsScreen({ navigation, route }: ResultsScreenProps) {
               <View style={styles.groupIcon}>
                 <Ionicons name={group.icon} size={18} color={colors.primary} />
               </View>
-              <View style={styles.flex}>
+              <View style={styles.flex1}>
                 <View style={styles.groupTitleRow}>
                   <Text style={styles.groupTitle}>{group.title}</Text>
                   {hasBest && (
@@ -206,6 +267,7 @@ export function ResultsScreen({ navigation, route }: ResultsScreenProps) {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.background },
+  flex1: { flex: 1 },
   content: { padding: spacing.lg, gap: spacing.lg, paddingBottom: spacing.xxxl },
   header: { gap: 4 },
   tripLine: { ...typography.title, color: colors.ink },
@@ -260,4 +322,34 @@ const styles = StyleSheet.create({
   bestTagText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800' },
   groupMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
   groupBody: { gap: spacing.md },
+  pickerBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(14,19,48,0.55)',
+    justifyContent: 'center',
+    padding: spacing.xl,
+  },
+  pickerSheet: {
+    backgroundColor: colors.background,
+    borderRadius: radii.xl,
+    padding: spacing.xl,
+    gap: spacing.sm,
+    ...shadows.floating,
+  },
+  pickerTitle: { ...typography.title, color: colors.ink },
+  pickerSubtitle: { fontSize: 13, color: colors.textSecondary, lineHeight: 18, marginBottom: spacing.sm },
+  pickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    backgroundColor: colors.surface,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    minHeight: 60,
+  },
+  pickerRowTitle: { fontSize: 15, fontWeight: '700', color: colors.text },
+  pickerRowMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+  pickerSkip: { alignItems: 'center', paddingVertical: spacing.md },
+  pickerSkipText: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
 });

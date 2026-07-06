@@ -99,6 +99,19 @@ A2Z/
     └── utils/time.ts
 ```
 
+## Live data — what's real and what's estimated
+
+| Data | Source | Status |
+| --- | --- | --- |
+| Weather (origin + destination, for your travel date) | **Open-Meteo** — free, keyless, called from the visitor's browser | **Live by default** |
+| Road distance/time (driving, rentals) | **OSRM** public router + **Nominatim/Open-Meteo geocoding** | **Live by default** |
+| Flight fares | **Amadeus** (free self-service keys) | Live once you add keys; estimates otherwise |
+| Train/bus fares | No public fare APIs exist (and scraping Amtrak/FlixBus violates their terms) | Calibrated estimates, clearly labeled |
+| Booking | Real provider sites opened with your route + date pre-filled: Google Flights, Wanderu (live Amtrak/bus fares), Kayak (rentals), Booking.com (hotels with check-in/out) | **Live** |
+| Trip reminders | Browser Notification API (expo-notifications hook point for native) | Works while the site is open |
+
+Every live call fails fast into the mock layer, so the app always works — offline, in CI, or if a free API has an outage. Set `EXPO_PUBLIC_LIVE_DATA=off` to force deterministic mock mode.
+
 ## Architecture notes
 
 **Service abstraction.** Every screen talks to services that return `ServiceResult<T>` (`{ ok: true, data } | { ok: false, error, code }`). Each service contains a clearly marked `REAL API:` comment showing exactly where and how to connect the live provider (endpoint, auth, mapping target). Because the mocks return the same domain types, swapping in Amadeus/OpenWeather/Google Directions changes zero UI code.

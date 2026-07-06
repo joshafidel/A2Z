@@ -311,6 +311,18 @@ export interface BackupPlan {
 // Hotels
 // ---------------------------------------------------------------------------
 
+/** Why the traveler is going — shapes hotel recommendations. */
+export type TripPurpose = 'work' | 'vacation' | 'family' | 'layover';
+
+export const TRIP_PURPOSE_LABELS: Record<TripPurpose, string> = {
+  work: 'Work / convention',
+  vacation: 'Vacation',
+  family: 'Visiting family',
+  layover: 'Quick layover',
+};
+
+export type HotelTag = 'business' | 'convention' | 'attractions' | 'family' | 'airport' | 'transit';
+
 export interface HotelOption {
   id: string;
   name: string;
@@ -321,7 +333,10 @@ export interface HotelOption {
   distanceLabel: string; // "5 min walk from South Station"
   nearAirport: boolean;
   perks: string[];
+  tags: HotelTag[];
   bookingUrl: string;
+  /** Purpose-aware one-liner: "3 blocks from the convention center." */
+  whyRecommended?: string;
 }
 
 // ---------------------------------------------------------------------------

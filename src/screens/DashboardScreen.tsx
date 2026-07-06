@@ -13,6 +13,13 @@ import { EmptyState } from '../components/States';
 import { TimelineView } from '../components/TimelineView';
 import { WarningList } from '../components/WarningList';
 import { useTrip } from '../context/TripContext';
+import {
+  cancelTripReminders,
+  notificationsSupported,
+  requestNotificationPermission,
+  scheduleTripReminders,
+  type TripReminder,
+} from '../services/notificationService';
 import { colors, radii, spacing, typography } from '../theme';
 import type { SavedTrip, TimelineStep } from '../types';
 import { formatCountdown, formatDate, formatDuration, formatMoney, formatTime } from '../utils/time';
@@ -28,6 +35,38 @@ export function DashboardScreen() {
     const t = setInterval(() => setNow(new Date()), 30_000);
     return () => clearInterval(t);
   }, []);
+
+  // Trip reminders (walk now / call your Uber / boarding soon).
+  const [remindersOn, setRemindersOn] = useState(false);
+  const [reminders, setReminders] = useState<TripReminder[]>([]);
+  const [reminderError, setReminderError] = useState<string>();
+
+  useEffect(() => {
+    // Re-arm when the active trip changes while reminders are on.
+    if (remindersOn && activeTrip) {
+      setReminders(scheduleTripReminders(activeTrip));
+    }
+  }, [remindersOn, activeTrip]);
+
+  const toggleReminders = async () => {
+    setReminderError(undefined);
+    if (remindersOn) {
+      if (activeTrip) cancelTripReminders(activeTrip.id);
+      setRemindersOn(false);
+      setReminders([]);
+      return;
+    }
+    if (!notificationsSupported()) {
+      setReminderError('Notifications are not supported in this browser.');
+      return;
+    }
+    const granted = await requestNotificationPermission();
+    if (!granted) {
+      setReminderError('Notification permission was denied — enable it in your browser settings.');
+      return;
+    }
+    setRemindersOn(true);
+  };
 
   const nextStep: TimelineStep | undefined = useMemo(() => {
     if (!activeTrip) return undefined;
@@ -112,6 +151,46 @@ export function DashboardScreen() {
       <Card>
         <SectionHeader title="Timeline" subtitle={`Arrive by ${formatTime(route.arrivalTime)}`} />
         <TimelineView steps={route.timeline} />
+      </Card>
+
+      {/* Trip reminders */}
+      <Card>
+        <View style={styles.reminderHeader}>
+          <View style={styles.flex}>
+            <Text style={styles.reminderTitle}>Trip reminders</Text>
+            <Text style={styles.reminderSubtitle}>
+              Alerts for when to start walking, call your ride, and board — each with a stated
+              grace period.
+            </Text>
+          </View>
+          <AppButton
+            label={remindersOn ? 'On' : 'Turn on'}
+            icon={remindersOn ? 'notifications' : 'notifications-outline'}
+            variant={remindersOn ? 'primary' : 'secondary'}
+            small
+            onPress={toggleReminders}
+          />
+        </View>
+        {reminderError ? <Text style={styles.reminderError}>{reminderError}</Text> : null}
+        {remindersOn && reminders.length === 0 && (
+          <Text style={styles.reminderEmpty}>
+            All of this trip's steps are in the past — reminders will arm for your next trip.
+          </Text>
+        )}
+        {remindersOn &&
+          reminders.slice(0, 4).map((r) => (
+            <View key={r.id} style={styles.reminderRow}>
+              <ModeIcon mode={r.mode} size={13} />
+              <View style={styles.flex}>
+                <Text style={styles.reminderRowTitle}>
+                  {formatTime(r.fireAt)} — {r.title}
+                </Text>
+                <Text style={styles.reminderRowMeta}>
+                  step due {formatTime(r.stepTime)} · {r.graceMinutes} min grace period
+                </Text>
+              </View>
+            </View>
+          ))}
       </Card>
 
       <Card>
@@ -206,6 +285,19 @@ const styles = StyleSheet.create({
   backupRow: { flexDirection: 'row', gap: spacing.md, alignItems: 'flex-start' },
   backupTitle: { fontSize: 14, fontWeight: '700', color: colors.text },
   backupDesc: { fontSize: 13, color: colors.textSecondary, marginTop: 2, lineHeight: 18 },
+  reminderHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  reminderTitle: { ...typography.heading, color: colors.ink },
+  reminderSubtitle: { fontSize: 12, color: colors.textSecondary, marginTop: 2, lineHeight: 17 },
+  reminderError: { fontSize: 12, fontWeight: '600', color: colors.danger, marginTop: spacing.sm },
+  reminderEmpty: { fontSize: 12, color: colors.textMuted, marginTop: spacing.sm },
+  reminderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    marginTop: spacing.md,
+  },
+  reminderRowTitle: { fontSize: 13, fontWeight: '700', color: colors.text },
+  reminderRowMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 1 },
   savedSection: { gap: spacing.sm },
   savedRow: {
     flexDirection: 'row',

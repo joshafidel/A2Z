@@ -4,7 +4,7 @@ import type { TripSearch } from '../types';
 
 export type PlanStackParamList = {
   Home: undefined;
-  Results: { search: TripSearch };
+  Results: { search: TripSearch; guided?: boolean };
   TripBuilder: { routeId: string };
   RouteDetail: { routeId: string; fromSaved?: boolean };
   Hotels: undefined;

@@ -1,18 +1,23 @@
 /**
  * Weather service.
  *
- * MOCK: deterministic per city + date so the same search always shows the
- * same forecast (and different dates show different weather).
+ * LIVE (default): Open-Meteo — a free, keyless, CORS-enabled forecast API
+ * called from the visitor's browser. The city is geocoded, then the daily
+ * forecast for the travel date is mapped into WeatherCondition.
  *
- * REAL API: swap `fetchLiveWeather` in for OpenWeather One Call
- *   GET https://api.openweathermap.org/data/3.0/onecall?lat=..&lon=..&appid=${apiConfig.openWeatherApiKey}
- * or WeatherAPI forecast.json — map the response into `WeatherCondition`.
+ * MOCK (fallback): deterministic per city + date, used automatically when
+ * the live call fails, the date is beyond the 16-day forecast window, or
+ * EXPO_PUBLIC_LIVE_DATA=off.
+ *
+ * REAL API (paid tier): OpenWeather One Call via apiConfig.openWeatherApiKey
+ * plugs in here the same way.
  */
 
 import type { ServiceResult, WeatherCondition, WeatherKind } from '../types';
-import { isLive, mockDelay } from './config';
+import { fetchWithTimeout, liveDataEnabled, mockDelay } from './config';
+import { geocode } from './geoService';
 
-interface WeatherTemplate {
+interface WeatherFacts {
   kind: WeatherKind;
   tempF: number;
   precipChance: number;
@@ -20,8 +25,145 @@ interface WeatherTemplate {
   summary: string;
 }
 
-/** Rotating mock forecasts per city; index chosen by day-of-year. */
-const MOCK_FORECASTS: Record<string, WeatherTemplate[]> = {
+// ---------------------------------------------------------------------------
+// Shared interpretation (used by both live and mock data)
+// ---------------------------------------------------------------------------
+
+function buildAdvisories(t: WeatherFacts): string[] {
+  const tips: string[] = [];
+  if (t.kind === 'rain' || t.kind === 'heavy-rain' || t.kind === 'storm') {
+    tips.push('Umbrella recommended.');
+    tips.push('Allow extra time — wet roads slow traffic.');
+  }
+  if (t.kind === 'storm') tips.push('Storms may increase flight delays.');
+  if (t.kind === 'snow') tips.push('Snow risk may increase airport delays.');
+  if (t.kind === 'heat') tips.push(`It is ${t.tempF}°F — walking with luggage may be uncomfortable.`);
+  if (t.kind === 'cold') tips.push('Bundle up — waiting outdoors will feel very cold.');
+  if (t.kind === 'wind') tips.push('Strong winds may cause minor flight delays.');
+  if (t.kind === 'fog') tips.push('Fog may slow morning flights and driving.');
+  return tips;
+}
+
+function discomfort(t: WeatherFacts): number {
+  switch (t.kind) {
+    case 'heavy-rain':
+    case 'storm':
+      return 0.9;
+    case 'rain':
+    case 'snow':
+      return 0.7;
+    case 'heat':
+      return 0.65;
+    case 'cold':
+    case 'wind':
+      return 0.45;
+    case 'fog':
+    case 'clouds':
+      return 0.15;
+    default:
+      return 0.05;
+  }
+}
+
+function delayImpact(t: WeatherFacts): number {
+  switch (t.kind) {
+    case 'storm':
+      return 0.8;
+    case 'snow':
+      return 0.75;
+    case 'heavy-rain':
+      return 0.55;
+    case 'fog':
+      return 0.5;
+    case 'rain':
+      return 0.35;
+    case 'wind':
+      return 0.3;
+    default:
+      return 0.05;
+  }
+}
+
+function toCondition(cityName: string, t: WeatherFacts): WeatherCondition {
+  return {
+    locationLabel: cityName,
+    kind: t.kind,
+    tempF: t.tempF,
+    precipChance: t.precipChance,
+    windMph: t.windMph,
+    summary: `${t.summary}, ${t.tempF}°F`,
+    advisories: buildAdvisories(t),
+    discomfortScore: discomfort(t),
+    delayImpact: delayImpact(t),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Live path: Open-Meteo
+// ---------------------------------------------------------------------------
+
+/** Map WMO weather codes (Open-Meteo) to our WeatherKind. */
+function fromWmoCode(code: number, tempF: number, windMph: number): { kind: WeatherKind; summary: string } {
+  if (code >= 95) return { kind: 'storm', summary: 'Thunderstorms' };
+  if (code >= 71 && code <= 86) return { kind: 'snow', summary: 'Snow' };
+  if (code === 65 || code === 82) return { kind: 'heavy-rain', summary: 'Heavy rain' };
+  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 81)) return { kind: 'rain', summary: 'Rain' };
+  if (code >= 45 && code <= 48) return { kind: 'fog', summary: 'Fog' };
+  if (tempF >= 88) return { kind: 'heat', summary: 'Hot' };
+  if (tempF <= 25) return { kind: 'cold', summary: 'Very cold' };
+  if (windMph >= 24) return { kind: 'wind', summary: 'Windy' };
+  if (code >= 2) return { kind: 'clouds', summary: 'Cloudy' };
+  return { kind: 'clear', summary: 'Clear' };
+}
+
+async function fetchLiveWeather(cityName: string, dateIso: string): Promise<WeatherCondition | undefined> {
+  const geo = await geocode(cityName);
+  if (!geo.ok) return undefined;
+
+  const date = new Date(dateIso);
+  const dayDiff = Math.floor((date.getTime() - Date.now()) / 86_400_000);
+  if (dayDiff < -1 || dayDiff > 15) return undefined; // outside forecast window → mock
+
+  const day = date.toISOString().slice(0, 10);
+  const url =
+    `https://api.open-meteo.com/v1/forecast?latitude=${geo.data.lat}&longitude=${geo.data.lng}` +
+    `&daily=weathercode,temperature_2m_max,precipitation_probability_max,windspeed_10m_max` +
+    `&temperature_unit=fahrenheit&windspeed_unit=mph&timezone=auto&start_date=${day}&end_date=${day}`;
+
+  try {
+    const res = await fetchWithTimeout(url);
+    if (!res.ok) return undefined;
+    const body = (await res.json()) as {
+      daily?: {
+        weathercode: number[];
+        temperature_2m_max: number[];
+        precipitation_probability_max: Array<number | null>;
+        windspeed_10m_max: number[];
+      };
+    };
+    const d = body.daily;
+    if (!d || d.weathercode.length === 0) return undefined;
+
+    const tempF = Math.round(d.temperature_2m_max[0]);
+    const windMph = Math.round(d.windspeed_10m_max[0]);
+    const { kind, summary } = fromWmoCode(d.weathercode[0], tempF, windMph);
+    return toCondition(cityName, {
+      kind,
+      tempF,
+      precipChance: d.precipitation_probability_max[0] ?? 0,
+      windMph,
+      summary,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Mock fallback (deterministic per city + date)
+// ---------------------------------------------------------------------------
+
+const MOCK_FORECASTS: Record<string, WeatherFacts[]> = {
   'New York': [
     { kind: 'rain', tempF: 54, precipChance: 78, windMph: 12, summary: 'Light rain' },
     { kind: 'clear', tempF: 72, precipChance: 5, windMph: 7, summary: 'Sunny' },
@@ -53,95 +195,28 @@ function dayOfYear(date: Date): number {
   return Math.floor((date.getTime() - start) / 86_400_000);
 }
 
-function buildAdvisories(t: WeatherTemplate): string[] {
-  const tips: string[] = [];
-  if (t.kind === 'rain' || t.kind === 'heavy-rain' || t.kind === 'storm') {
-    tips.push('Umbrella recommended.');
-    tips.push('Allow extra time — wet roads slow traffic.');
-  }
-  if (t.kind === 'storm') tips.push('Storms may increase flight delays.');
-  if (t.kind === 'snow') tips.push('Snow risk may increase airport delays.');
-  if (t.kind === 'heat') tips.push(`It is ${t.tempF}°F — walking with luggage may be uncomfortable.`);
-  if (t.kind === 'cold') tips.push('Bundle up — waiting outdoors will feel very cold.');
-  if (t.kind === 'wind') tips.push('Strong winds may cause minor flight delays.');
-  if (t.kind === 'fog') tips.push('Fog may slow morning flights and driving.');
-  return tips;
-}
-
-function discomfort(t: WeatherTemplate): number {
-  switch (t.kind) {
-    case 'heavy-rain':
-    case 'storm':
-      return 0.9;
-    case 'rain':
-    case 'snow':
-      return 0.7;
-    case 'heat':
-      return 0.65;
-    case 'cold':
-    case 'wind':
-      return 0.45;
-    case 'fog':
-    case 'clouds':
-      return 0.15;
-    default:
-      return 0.05;
-  }
-}
-
-function delayImpact(t: WeatherTemplate): number {
-  switch (t.kind) {
-    case 'storm':
-      return 0.8;
-    case 'snow':
-      return 0.75;
-    case 'heavy-rain':
-      return 0.55;
-    case 'fog':
-      return 0.5;
-    case 'rain':
-      return 0.35;
-    case 'wind':
-      return 0.3;
-    default:
-      return 0.05;
-  }
-}
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 export async function getWeather(
   cityName: string,
   dateIso: string,
 ): Promise<ServiceResult<WeatherCondition>> {
-  if (isLive('openWeatherApiKey')) {
-    // REAL API: call OpenWeather here and map into WeatherCondition.
-    // Falls through to mock until implemented.
-  }
-
-  await mockDelay(150);
-
-  const templates = MOCK_FORECASTS[cityName] ?? MOCK_FORECASTS['New York'];
-  if (!templates) {
-    return { ok: false, error: `No forecast available for ${cityName}`, code: 'NOT_FOUND' };
-  }
-
   const date = new Date(dateIso);
   if (Number.isNaN(date.getTime())) {
     return { ok: false, error: 'Invalid date for weather lookup', code: 'NOT_FOUND' };
   }
 
+  // Live first — real forecast for the actual travel date.
+  if (liveDataEnabled()) {
+    const live = await fetchLiveWeather(cityName, dateIso);
+    if (live) return { ok: true, data: live };
+  }
+
+  // Mock fallback.
+  await mockDelay(150);
+  const templates = MOCK_FORECASTS[cityName] ?? MOCK_FORECASTS['New York'];
   const t = templates[dayOfYear(date) % templates.length];
-  return {
-    ok: true,
-    data: {
-      locationLabel: cityName,
-      kind: t.kind,
-      tempF: t.tempF,
-      precipChance: t.precipChance,
-      windMph: t.windMph,
-      summary: `${t.summary}, ${t.tempF}°F`,
-      advisories: buildAdvisories(t),
-      discomfortScore: discomfort(t),
-      delayImpact: delayImpact(t),
-    },
-  };
+  return { ok: true, data: toCondition(cityName, t) };
 }

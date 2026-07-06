@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -17,6 +17,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppButton } from '../components/AppButton';
 import { Card } from '../components/Card';
 import { Chip } from '../components/Chip';
+import { PlanWizard, type WizardResult } from '../components/PlanWizard';
 import { useTrip } from '../context/TripContext';
 import type { HomeScreenProps } from '../navigation/types';
 import { getCurrentLocation } from '../services/locationService';
@@ -111,7 +112,20 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
   const [locationError, setLocationError] = useState<string>();
   const [destination, setDestination] = useState('');
   const [destLabel, setDestLabel] = useState<string>();
-  const [dates] = useState(dateChoices);
+  const [wizardVisible, setWizardVisible] = useState(false);
+
+  // Dates regenerate when the calendar day changes, so "Today" is always
+  // actually today even if the tab stays open past midnight.
+  const [todayKey, setTodayKey] = useState(() => new Date().toDateString());
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const key = new Date().toDateString();
+      setTodayKey((prev) => (prev === key ? prev : key));
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- todayKey drives regeneration
+  const dates = useMemo(dateChoices, [todayKey]);
   const [dayOffset, setDayOffset] = useState(1); // default tomorrow
   const [timeOfDay, setTimeOfDay] = useState<TimeOfDay>(); // optional
   const [travelers, setTravelers] = useState(1);
@@ -149,6 +163,30 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
     d.setDate(d.getDate() + dayOffset);
     d.setHours(timeOfDay ? TIME_OF_DAY_HOURS[timeOfDay] : DEFAULT_HOUR, 0, 0, 0);
     return d.toISOString();
+  };
+
+  const onWizardComplete = (result: WizardResult) => {
+    setWizardVisible(false);
+    const d = new Date();
+    d.setDate(d.getDate() + result.dayOffset);
+    d.setHours(result.timeOfDay ? TIME_OF_DAY_HOURS[result.timeOfDay] : DEFAULT_HOUR, 0, 0, 0);
+    const search: TripSearch = {
+      origin: {
+        address: result.origin,
+        label: result.originIsCurrent ? 'Current location' : 'Home',
+      },
+      destination: {
+        address: result.destination,
+        label: result.destinationLabel ?? result.destination.split(',')[0],
+      },
+      departureTime: d.toISOString(),
+      timeOfDay: result.timeOfDay,
+      travelers,
+      bags,
+      preference,
+      existingTicket: undefined,
+    };
+    navigation.navigate('Results', { search, guided: true });
   };
 
   const plan = () => {
@@ -192,10 +230,22 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
           <Text style={styles.brand}>A2Z</Text>
           <Text style={styles.heroTitle}>Door to door,{'\n'}planned to the minute.</Text>
           <Text style={styles.heroSubtitle}>
-            Compare flights, trains, buses, rideshares and transit — with weather, prices, and
+            Compare flights, trains, buses, rentals and transit — with live weather, prices, and
             timing built in.
           </Text>
+          <AppButton
+            label="Plan step by step"
+            icon="chatbubbles"
+            onPress={() => setWizardVisible(true)}
+            style={styles.wizardCta}
+          />
         </LinearGradient>
+
+        <PlanWizard
+          visible={wizardVisible}
+          onClose={() => setWizardVisible(false)}
+          onComplete={onWizardComplete}
+        />
 
         <View style={styles.body}>
           {/* Search card */}
@@ -457,6 +507,7 @@ const styles = StyleSheet.create({
   },
   heroTitle: { ...typography.hero, color: colors.textOnDark, lineHeight: 36 },
   heroSubtitle: { fontSize: 14, color: colors.textOnDarkMuted, lineHeight: 20, maxWidth: 320 },
+  wizardCta: { marginTop: spacing.md },
   body: {
     paddingHorizontal: spacing.lg,
     marginTop: -spacing.xxl,
