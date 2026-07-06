@@ -6,9 +6,32 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import type { RouteOption, SavedTrip, ServiceResult, TripSearch } from '../types';
+import type { HotelOption, Place, RouteOption, SavedTrip, ServiceResult, TripSearch } from '../types';
 
 const KEY = '@a2z/saved-trips';
+const HOME_KEY = '@a2z/home-place';
+
+// ---------------------------------------------------------------------------
+// Saved home address
+// ---------------------------------------------------------------------------
+
+export async function getHomePlace(): Promise<Place | undefined> {
+  try {
+    const raw = await AsyncStorage.getItem(HOME_KEY);
+    return raw ? (JSON.parse(raw) as Place) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function setHomePlace(place: Place): Promise<boolean> {
+  try {
+    await AsyncStorage.setItem(HOME_KEY, JSON.stringify(place));
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export async function getSavedTrips(): Promise<ServiceResult<SavedTrip[]>> {
   try {
@@ -22,6 +45,7 @@ export async function getSavedTrips(): Promise<ServiceResult<SavedTrip[]>> {
 export async function saveTrip(
   search: TripSearch,
   route: RouteOption,
+  hotel?: HotelOption,
 ): Promise<ServiceResult<SavedTrip>> {
   try {
     const existing = await getSavedTrips();
@@ -31,6 +55,7 @@ export async function saveTrip(
       savedAt: new Date().toISOString(),
       search,
       route,
+      hotel,
     };
     // Newest first; replace any previous save of the same route.
     const next = [trip, ...trips.filter((t) => t.route.id !== route.id)];

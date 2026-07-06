@@ -1,13 +1,8 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
-import type { TripSearch } from '../types';
-
 export type PlanStackParamList = {
   Home: undefined;
-  Results: { search: TripSearch; guided?: boolean };
-  TripBuilder: { routeId: string };
-  RouteDetail: { routeId: string; fromSaved?: boolean };
-  Hotels: undefined;
+  Planner: undefined;
 };
 
 export type RootTabParamList = {
@@ -17,7 +12,4 @@ export type RootTabParamList = {
 };
 
 export type HomeScreenProps = NativeStackScreenProps<PlanStackParamList, 'Home'>;
-export type ResultsScreenProps = NativeStackScreenProps<PlanStackParamList, 'Results'>;
-export type TripBuilderScreenProps = NativeStackScreenProps<PlanStackParamList, 'TripBuilder'>;
-export type RouteDetailScreenProps = NativeStackScreenProps<PlanStackParamList, 'RouteDetail'>;
-export type HotelsScreenProps = NativeStackScreenProps<PlanStackParamList, 'Hotels'>;
+export type PlannerScreenProps = NativeStackScreenProps<PlanStackParamList, 'Planner'>;

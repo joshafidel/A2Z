@@ -1,574 +1,179 @@
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import React, { useEffect, useMemo, useState } from 'react';
-import {
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Switch,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import React from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppButton } from '../components/AppButton';
 import { Card } from '../components/Card';
-import { Chip } from '../components/Chip';
-import { PlanWizard, type WizardResult } from '../components/PlanWizard';
+import { ModeIcon } from '../components/ModeIcon';
 import { useTrip } from '../context/TripContext';
 import type { HomeScreenProps } from '../navigation/types';
-import { getCurrentLocation } from '../services/locationService';
 import { colors, radii, spacing, typography } from '../theme';
-import {
-  PREFERENCE_LABELS,
-  TIME_OF_DAY_LABELS,
-  type TimeOfDay,
-  type TransportMode,
-  type TravelPreference,
-  type TripSearch,
-} from '../types';
+import { formatCountdown, formatDate, formatMoney, formatTime } from '../utils/time';
 
-// ---------------------------------------------------------------------------
-// Sample trips (quick-fill) — the corridors the mock data layer supports.
-// ---------------------------------------------------------------------------
-
-const SAMPLE_TRIPS: Array<{ label: string; origin: string; destination: string; destLabel: string }> = [
-  {
-    label: 'NYC → Boston',
-    origin: '215 W 75th St, New York, NY',
-    destination: 'Downtown hotel, Boston, MA',
-    destLabel: 'Boston hotel',
-  },
-  {
-    label: 'NYC → Washington DC',
-    origin: '215 W 75th St, New York, NY',
-    destination: 'Downtown hotel, Washington, DC',
-    destLabel: 'DC hotel',
-  },
-  {
-    label: 'Manhattan → JFK',
-    origin: 'Bryant Park, Manhattan, NY',
-    destination: 'JFK Airport, Terminal 4',
-    destLabel: 'JFK Terminal 4',
-  },
-  {
-    label: 'Manhattan → Newark Airport',
-    origin: 'Bryant Park, Manhattan, NY',
-    destination: 'Newark Airport (EWR), Terminal B',
-    destLabel: 'EWR Terminal B',
-  },
-  {
-    label: 'Logan → Downtown Boston',
-    origin: 'Boston Logan Airport, Terminal A',
-    destination: 'Downtown hotel, Boston, MA',
-    destLabel: 'Boston hotel',
-  },
-];
-
-/** The next 14 days as selectable travel dates. */
-function dateChoices(): Array<{ label: string; sublabel: string; dayOffset: number }> {
-  const out: Array<{ label: string; sublabel: string; dayOffset: number }> = [];
-  for (let i = 0; i < 14; i++) {
-    const d = new Date();
-    d.setDate(d.getDate() + i);
-    out.push({
-      label: i === 0 ? 'Today' : i === 1 ? 'Tmrw' : d.toLocaleDateString([], { weekday: 'short' }),
-      sublabel: d.toLocaleDateString([], { month: 'short', day: 'numeric' }),
-      dayOffset: i,
-    });
-  }
-  return out;
-}
-
-/** Departure hour for each (optional) time-of-day window. */
-const TIME_OF_DAY_HOURS: Record<TimeOfDay, number> = { morning: 8, midday: 13, night: 19 };
-const DEFAULT_HOUR = 9;
-
-const TIME_OF_DAY_ICONS: Record<TimeOfDay, keyof typeof Ionicons.glyphMap> = {
-  morning: 'sunny-outline',
-  midday: 'partly-sunny-outline',
-  night: 'moon-outline',
-};
-
-const PREFERENCE_ICONS: Record<TravelPreference, keyof typeof Ionicons.glyphMap> = {
-  cheapest: 'pricetag',
-  fastest: 'flash',
-  easiest: 'happy',
-  'least-walking': 'walk',
-  'fewest-transfers': 'swap-horizontal',
-  'most-reliable': 'shield-checkmark',
-};
-
+/**
+ * Starting page: no search form, no clutter — one clear action.
+ * A2Z interviews you (where from, where to, what day, how) and curates
+ * the plan; this page just opens the door.
+ */
 export function HomeScreen({ navigation }: HomeScreenProps) {
   const insets = useSafeAreaInsets();
-  const { defaultPreference } = useTrip();
-
-  const [origin, setOrigin] = useState('');
-  const [originIsCurrent, setOriginIsCurrent] = useState(false);
-  const [locating, setLocating] = useState(false);
-  const [locationError, setLocationError] = useState<string>();
-  const [destination, setDestination] = useState('');
-  const [destLabel, setDestLabel] = useState<string>();
-  const [wizardVisible, setWizardVisible] = useState(false);
-
-  // Dates regenerate when the calendar day changes, so "Today" is always
-  // actually today even if the tab stays open past midnight.
-  const [todayKey, setTodayKey] = useState(() => new Date().toDateString());
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const key = new Date().toDateString();
-      setTodayKey((prev) => (prev === key ? prev : key));
-    }, 60_000);
-    return () => clearInterval(timer);
-  }, []);
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- todayKey drives regeneration
-  const dates = useMemo(dateChoices, [todayKey]);
-  const [dayOffset, setDayOffset] = useState(1); // default tomorrow
-  const [timeOfDay, setTimeOfDay] = useState<TimeOfDay>(); // optional
-  const [travelers, setTravelers] = useState(1);
-  const [bags, setBags] = useState(1);
-  const [preference, setPreference] = useState<TravelPreference>(defaultPreference);
-  const [hasTicket, setHasTicket] = useState(false);
-  const [ticketMode, setTicketMode] = useState<'flight' | 'train' | 'bus'>('train');
-  const [touched, setTouched] = useState(false);
-
-  const valid = origin.trim().length > 3 && destination.trim().length > 3;
-
-  const applySample = (s: (typeof SAMPLE_TRIPS)[number]) => {
-    setOrigin(s.origin);
-    setOriginIsCurrent(false);
-    setDestination(s.destination);
-    setDestLabel(s.destLabel);
-    setTouched(false);
-  };
-
-  const useCurrentLocation = async () => {
-    setLocating(true);
-    setLocationError(undefined);
-    const result = await getCurrentLocation();
-    setLocating(false);
-    if (result.ok) {
-      setOrigin(result.data.address);
-      setOriginIsCurrent(true);
-    } else {
-      setLocationError(result.error);
-    }
-  };
-
-  const departureIso = () => {
-    const d = new Date();
-    d.setDate(d.getDate() + dayOffset);
-    d.setHours(timeOfDay ? TIME_OF_DAY_HOURS[timeOfDay] : DEFAULT_HOUR, 0, 0, 0);
-    return d.toISOString();
-  };
-
-  const onWizardComplete = (result: WizardResult) => {
-    setWizardVisible(false);
-    const d = new Date();
-    d.setDate(d.getDate() + result.dayOffset);
-    d.setHours(result.timeOfDay ? TIME_OF_DAY_HOURS[result.timeOfDay] : DEFAULT_HOUR, 0, 0, 0);
-    const search: TripSearch = {
-      origin: {
-        address: result.origin,
-        label: result.originIsCurrent ? 'Current location' : 'Home',
-      },
-      destination: {
-        address: result.destination,
-        label: result.destinationLabel ?? result.destination.split(',')[0],
-      },
-      departureTime: d.toISOString(),
-      timeOfDay: result.timeOfDay,
-      travelers,
-      bags,
-      preference,
-      existingTicket: undefined,
-    };
-    navigation.navigate('Results', { search, guided: true });
-  };
-
-  const plan = () => {
-    setTouched(true);
-    if (!valid) return;
-    const search: TripSearch = {
-      origin: { address: origin.trim(), label: originIsCurrent ? 'Current location' : 'Home' },
-      destination: {
-        address: destination.trim(),
-        // Fall back to the first chunk of the typed address ("Downtown hotel").
-        label: destLabel ?? destination.trim().split(',')[0],
-      },
-      departureTime: departureIso(),
-      timeOfDay,
-      travelers,
-      bags,
-      preference,
-      existingTicket: hasTicket ? { mode: ticketMode as TransportMode & ('flight' | 'train' | 'bus') } : undefined,
-    };
-    navigation.navigate('Results', { search });
-  };
+  const { activeTrip, savedTrips } = useTrip();
 
   return (
-    <KeyboardAvoidingView
+    <ScrollView
       style={styles.flex}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      contentContainerStyle={{ paddingBottom: spacing.xxxl }}
+      showsVerticalScrollIndicator={false}
     >
-      <ScrollView
-        style={styles.flex}
-        contentContainerStyle={{ paddingBottom: spacing.xxxl }}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
+      <LinearGradient
+        colors={[colors.navy, '#1E2B66', colors.primaryDark]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={[styles.hero, { paddingTop: insets.top + spacing.xxxl }]}
       >
-        {/* Hero */}
-        <LinearGradient
-          colors={[colors.navy, '#1E2B66', colors.primaryDark]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={[styles.hero, { paddingTop: insets.top + spacing.xl }]}
-        >
-          <Text style={styles.brand}>A2Z</Text>
-          <Text style={styles.heroTitle}>Door to door,{'\n'}planned to the minute.</Text>
-          <Text style={styles.heroSubtitle}>
-            Compare flights, trains, buses, rentals and transit — with live weather, prices, and
-            timing built in.
-          </Text>
-          <AppButton
-            label="Plan step by step"
-            icon="chatbubbles"
-            onPress={() => setWizardVisible(true)}
-            style={styles.wizardCta}
-          />
-        </LinearGradient>
-
-        <PlanWizard
-          visible={wizardVisible}
-          onClose={() => setWizardVisible(false)}
-          onComplete={onWizardComplete}
+        <Text style={styles.brand}>A2Z</Text>
+        <Text style={styles.heroTitle}>Your trip,{'\n'}curated for you.</Text>
+        <Text style={styles.heroSubtitle}>
+          Answer a few questions — we compare every way to get there, pick your tickets, sort your
+          stay, and plan door to door.
+        </Text>
+        <AppButton
+          label="Plan a trip"
+          icon="sparkles"
+          onPress={() => navigation.navigate('Planner')}
+          style={styles.cta}
         />
-
-        <View style={styles.body}>
-          {/* Search card */}
-          <Card style={styles.searchCard}>
-            <Field
-              icon="ellipse"
-              iconColor={colors.primary}
-              placeholder="Starting address"
-              value={origin}
-              onChangeText={(t) => {
-                setOrigin(t);
-                setOriginIsCurrent(false);
-              }}
-              error={touched && origin.trim().length <= 3 ? 'Enter a starting address' : undefined}
-            />
-            <Pressable
-              onPress={useCurrentLocation}
-              accessibilityRole="button"
-              style={({ pressed }) => [styles.locationButton, pressed && styles.locationPressed]}
-            >
-              <Ionicons
-                name={originIsCurrent ? 'locate' : 'locate-outline'}
-                size={15}
-                color={colors.primary}
-              />
-              <Text style={styles.locationText}>
-                {locating
-                  ? 'Finding your location…'
-                  : originIsCurrent
-                    ? 'Using your current location'
-                    : 'Use my current location'}
-              </Text>
-            </Pressable>
-            {locationError ? <Text style={styles.fieldError}>{locationError}</Text> : null}
-            <View style={styles.divider} />
-            <Field
-              icon="location"
-              iconColor={colors.danger}
-              placeholder="Destination — address, hotel, or just a city"
-              value={destination}
-              onChangeText={(t) => {
-                setDestination(t);
-                setDestLabel(undefined);
-              }}
-              error={touched && destination.trim().length <= 3 ? 'Enter a destination' : undefined}
-            />
-          </Card>
-
-          {/* Sample trips */}
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-            {SAMPLE_TRIPS.map((s) => (
-              <Chip
-                key={s.label}
-                label={s.label}
-                icon="sparkles"
-                selected={origin === s.origin && destination === s.destination}
-                onPress={() => applySample(s)}
-              />
-            ))}
-          </ScrollView>
-
-          {/* Travel date */}
-          <Text style={styles.sectionLabel}>TRAVEL DATE</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-            {dates.map((d) => {
-              const selected = dayOffset === d.dayOffset;
-              return (
-                <Pressable
-                  key={d.dayOffset}
-                  onPress={() => setDayOffset(d.dayOffset)}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected }}
-                  style={[styles.dateChip, selected && styles.dateChipSelected]}
-                >
-                  <Text style={[styles.dateChipDay, selected && styles.dateChipTextSelected]}>
-                    {d.label}
-                  </Text>
-                  <Text style={[styles.dateChipDate, selected && styles.dateChipTextSelected]}>
-                    {d.sublabel}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
-
-          {/* Optional departure window */}
-          <Text style={styles.sectionLabel}>DEPARTURE WINDOW (OPTIONAL)</Text>
-          <View style={styles.prefGrid}>
-            {(Object.keys(TIME_OF_DAY_LABELS) as TimeOfDay[]).map((t) => (
-              <Chip
-                key={t}
-                label={TIME_OF_DAY_LABELS[t]}
-                icon={TIME_OF_DAY_ICONS[t]}
-                selected={timeOfDay === t}
-                onPress={() => setTimeOfDay((prev) => (prev === t ? undefined : t))}
-              />
-            ))}
-          </View>
-
-          {/* Party */}
-          <View style={styles.stepperRow}>
-            <Stepper
-              icon="people"
-              label="Travelers"
-              value={travelers}
-              min={1}
-              max={8}
-              onChange={setTravelers}
-            />
-            <Stepper icon="briefcase" label="Bags" value={bags} min={0} max={6} onChange={setBags} />
-          </View>
-
-          {/* Preference */}
-          <Text style={styles.sectionLabel}>WHAT MATTERS MOST?</Text>
-          <View style={styles.prefGrid}>
-            {(Object.keys(PREFERENCE_LABELS) as TravelPreference[]).map((p) => (
-              <Chip
-                key={p}
-                label={PREFERENCE_LABELS[p]}
-                icon={PREFERENCE_ICONS[p]}
-                selected={preference === p}
-                onPress={() => setPreference(p)}
-              />
-            ))}
-          </View>
-
-          {/* Existing ticket */}
-          <Card style={styles.ticketCard}>
-            <View style={styles.ticketRow}>
-              <View style={styles.flex}>
-                <Text style={styles.ticketTitle}>I already have a ticket</Text>
-                <Text style={styles.ticketSubtitle}>
-                  We'll plan around it and skip that fare in the totals.
-                </Text>
-              </View>
-              <Switch
-                value={hasTicket}
-                onValueChange={setHasTicket}
-                trackColor={{ true: colors.primary, false: colors.border }}
-                thumbColor="#FFFFFF"
-              />
-            </View>
-            {hasTicket && (
-              <View style={styles.ticketModes}>
-                {(['flight', 'train', 'bus'] as const).map((m) => (
-                  <Chip
-                    key={m}
-                    label={m[0].toUpperCase() + m.slice(1)}
-                    selected={ticketMode === m}
-                    onPress={() => setTicketMode(m)}
-                  />
-                ))}
-              </View>
-            )}
-          </Card>
-
-          <AppButton label="Plan my trip" icon="navigate" onPress={plan} disabled={touched && !valid} />
+        <View style={styles.heroSteps}>
+          {['Where from', 'Where to', 'What day', 'How'].map((s, i) => (
+            <React.Fragment key={s}>
+              {i > 0 && <Ionicons name="chevron-forward" size={12} color={colors.textOnDarkMuted} />}
+              <Text style={styles.heroStep}>{s}</Text>
+            </React.Fragment>
+          ))}
         </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </LinearGradient>
+
+      <View style={styles.body}>
+        {activeTrip ? (
+          <Card
+            onPress={() => navigation.getParent()?.navigate('TripTab' as never)}
+            style={styles.tripCard}
+          >
+            <View style={styles.tripHeader}>
+              <Text style={styles.tripLabel}>NEXT TRIP · LEAVE {formatCountdown(activeTrip.route.recommendedLeaveTime).toUpperCase()}</Text>
+              <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
+            </View>
+            <Text style={styles.tripTitle}>
+              {activeTrip.search.origin.label ?? 'Home'} → {activeTrip.search.destination.label}
+            </Text>
+            <View style={styles.tripMetaRow}>
+              <ModeIcon mode={activeTrip.route.primaryMode} size={13} />
+              <Text style={styles.tripMeta}>
+                {formatDate(activeTrip.route.departureTime)} · leave{' '}
+                {formatTime(activeTrip.route.recommendedLeaveTime)} ·{' '}
+                {formatMoney(activeTrip.route.totalPriceUsd)}
+              </Text>
+            </View>
+          </Card>
+        ) : (
+          <Card style={styles.emptyCard}>
+            <Ionicons name="compass-outline" size={22} color={colors.primary} />
+            <Text style={styles.emptyText}>
+              No trips yet. Tap "Plan a trip" and answer a few questions — takes about a minute.
+            </Text>
+          </Card>
+        )}
+
+        {savedTrips.length > 1 && (
+          <Text style={styles.savedCount}>
+            {savedTrips.length} saved trips in My Trip
+          </Text>
+        )}
+
+        {/* What A2Z does */}
+        <View style={styles.featureGrid}>
+          <Feature icon="pricetags" title="Honest pricing" text="Cheapest, priciest, and typical — hidden fees included." />
+          <Feature icon="rainy" title="Weather-aware" text="Real forecasts shape every walk-or-ride call." />
+          <Feature icon="notifications" title="Nudges on time" text="Walk now, call your ride — with grace periods." />
+          <Feature icon="bed" title="Stay sorted" text="Hotels matched to why you're traveling." />
+        </View>
+      </View>
+    </ScrollView>
   );
 }
 
-// ---------------------------------------------------------------------------
-
-function Field({
+function Feature({
   icon,
-  iconColor,
-  placeholder,
-  value,
-  onChangeText,
-  error,
+  title,
+  text,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
-  iconColor: string;
-  placeholder: string;
-  value: string;
-  onChangeText: (t: string) => void;
-  error?: string;
+  title: string;
+  text: string;
 }) {
   return (
-    <View>
-      <View style={styles.fieldRow}>
-        <Ionicons name={icon} size={14} color={iconColor} />
-        <TextInput
-          style={styles.input}
-          placeholder={placeholder}
-          placeholderTextColor={colors.textMuted}
-          value={value}
-          onChangeText={onChangeText}
-          autoCapitalize="words"
-          autoCorrect={false}
-          returnKeyType="done"
-        />
+    <View style={styles.feature}>
+      <View style={styles.featureIcon}>
+        <Ionicons name={icon} size={17} color={colors.primary} />
       </View>
-      {error ? <Text style={styles.fieldError}>{error}</Text> : null}
+      <Text style={styles.featureTitle}>{title}</Text>
+      <Text style={styles.featureText}>{text}</Text>
     </View>
   );
 }
 
-function Stepper({
-  icon,
-  label,
-  value,
-  min,
-  max,
-  onChange,
-}: {
-  icon: keyof typeof Ionicons.glyphMap;
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  onChange: (v: number) => void;
-}) {
-  return (
-    <Card style={styles.stepper} padded={false}>
-      <View style={styles.stepperInner}>
-        <View style={styles.stepperLabelRow}>
-          <Ionicons name={icon} size={15} color={colors.textSecondary} />
-          <Text style={styles.stepperLabel}>{label}</Text>
-        </View>
-        <View style={styles.stepperControls}>
-          <Pressable
-            onPress={() => onChange(Math.max(min, value - 1))}
-            style={styles.stepperButton}
-            accessibilityLabel={`Decrease ${label}`}
-          >
-            <Ionicons name="remove" size={18} color={value <= min ? colors.textMuted : colors.primary} />
-          </Pressable>
-          <Text style={styles.stepperValue}>{value}</Text>
-          <Pressable
-            onPress={() => onChange(Math.min(max, value + 1))}
-            style={styles.stepperButton}
-            accessibilityLabel={`Increase ${label}`}
-          >
-            <Ionicons name="add" size={18} color={value >= max ? colors.textMuted : colors.primary} />
-          </Pressable>
-        </View>
-      </View>
-    </Card>
-  );
-}
-
 const styles = StyleSheet.create({
-  flex: { flex: 1 },
+  flex: { flex: 1, backgroundColor: colors.background },
   hero: {
     paddingHorizontal: spacing.xl,
-    paddingBottom: spacing.xxxl + spacing.lg,
+    paddingBottom: spacing.xxxl,
     borderBottomLeftRadius: radii.xl,
     borderBottomRightRadius: radii.xl,
-    gap: spacing.sm,
+    gap: spacing.md,
   },
-  brand: {
-    color: colors.textOnDark,
-    fontSize: 16,
-    fontWeight: '900',
-    letterSpacing: 4,
-  },
-  heroTitle: { ...typography.hero, color: colors.textOnDark, lineHeight: 36 },
-  heroSubtitle: { fontSize: 14, color: colors.textOnDarkMuted, lineHeight: 20, maxWidth: 320 },
-  wizardCta: { marginTop: spacing.md },
-  body: {
-    paddingHorizontal: spacing.lg,
-    marginTop: -spacing.xxl,
-    gap: spacing.lg,
-  },
-  searchCard: { gap: spacing.xs },
-  divider: { height: 1, backgroundColor: colors.border, marginLeft: 26 },
-  locationButton: {
+  brand: { color: colors.textOnDark, fontSize: 16, fontWeight: '900', letterSpacing: 4 },
+  heroTitle: { ...typography.hero, fontSize: 34, lineHeight: 40, color: colors.textOnDark },
+  heroSubtitle: { fontSize: 15, color: colors.textOnDarkMuted, lineHeight: 22, maxWidth: 330 },
+  cta: { marginTop: spacing.md },
+  heroSteps: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginLeft: 26,
-    marginBottom: spacing.sm,
-    minHeight: 32,
-  },
-  locationPressed: { opacity: 0.7 },
-  locationText: { fontSize: 13, fontWeight: '700', color: colors.primary },
-  dateChip: {
-    alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: radii.md,
+    marginTop: spacing.sm,
+  },
+  heroStep: { fontSize: 12, fontWeight: '700', color: colors.textOnDarkMuted },
+  body: { padding: spacing.lg, gap: spacing.lg, marginTop: spacing.sm },
+  tripCard: { gap: spacing.sm },
+  tripHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  tripLabel: { fontSize: 11, fontWeight: '900', color: colors.primary, letterSpacing: 0.8 },
+  tripTitle: { ...typography.heading, color: colors.ink },
+  tripMetaRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  tripMeta: { fontSize: 13, color: colors.textSecondary },
+  emptyCard: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  emptyText: { flex: 1, fontSize: 13, color: colors.textSecondary, lineHeight: 19 },
+  savedCount: { fontSize: 13, color: colors.textMuted, textAlign: 'center' },
+  featureGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md },
+  feature: {
+    flexBasis: '47%',
+    flexGrow: 1,
+    backgroundColor: colors.surface,
+    borderRadius: radii.lg,
     borderWidth: 1,
     borderColor: colors.border,
-    backgroundColor: colors.surfaceAlt,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-    minWidth: 72,
-    minHeight: 56,
+    padding: spacing.lg,
+    gap: 6,
   },
-  dateChipSelected: { backgroundColor: colors.primary, borderColor: colors.primary },
-  dateChipDay: { fontSize: 13, fontWeight: '700', color: colors.textSecondary },
-  dateChipDate: { fontSize: 12, fontWeight: '500', color: colors.textMuted, marginTop: 1 },
-  dateChipTextSelected: { color: '#FFFFFF' },
-  fieldRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, minHeight: 46 },
-  input: { flex: 1, fontSize: 16, color: colors.text, paddingVertical: spacing.sm },
-  fieldError: { color: colors.danger, fontSize: 12, fontWeight: '600', marginLeft: 26, marginBottom: 4 },
-  chipRow: { gap: spacing.sm, paddingVertical: 2 },
-  sectionLabel: { ...typography.micro, color: colors.textMuted, marginTop: spacing.sm },
-  stepperRow: { flexDirection: 'row', gap: spacing.md },
-  stepper: { flex: 1 },
-  stepperInner: { padding: spacing.md, gap: spacing.sm },
-  stepperLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  stepperLabel: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
-  stepperControls: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  stepperButton: {
-    width: 40,
-    height: 40,
-    borderRadius: radii.sm,
-    backgroundColor: colors.surfaceAlt,
+  featureIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: colors.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  stepperValue: { ...typography.title, color: colors.ink },
-  prefGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  ticketCard: { gap: spacing.md },
-  ticketRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  ticketTitle: { ...typography.bodyMedium, color: colors.text },
-  ticketSubtitle: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
-  ticketModes: { flexDirection: 'row', gap: spacing.sm },
+  featureTitle: { fontSize: 14, fontWeight: '700', color: colors.ink },
+  featureText: { fontSize: 12, color: colors.textSecondary, lineHeight: 17 },
 });

@@ -6,14 +6,21 @@ Built with **React Native + Expo + TypeScript**. All external data comes from a 
 
 ## Screens
 
-| Screen | What it does |
+A2Z is **not a search engine** — it interviews you and curates the plan:
+
+| Screen / step | What it does |
 | --- | --- |
-| **Home** | Search form: origin (with **Use my current location**), destination (a full address, someone's house, or just a city), a 14-day date picker, an optional morning/midday/night departure window, travelers, bags, preference, existing-ticket toggle. Sample-trip quick fills. |
-| **Results** | Route options grouped into collapsible **dropdowns by mode — Flights, Trains, Buses, Cars & rideshare, Transit** — with *Best overall / Cheapest / Fastest / Least stressful* badges, weather strip, and a plain-English recommendation. |
-| **Trip builder** | Step-by-step booking: the main travel method is Step 1; Steps 2–3 pick how to reach the station/airport and finish the trip, with live price comparisons across **transit, Uber, Uber Shuttle, Lyft, Empower, and taxi** plus a weather/luggage-aware recommendation. |
-| **Route detail** | Full door-to-door timeline, airport plan (TSA, boarding, bag cutoff, leave-home-by), walk-vs-ride tradeoffs, price breakdown with hidden costs, booking deep links, backup plans. Save the trip from here — then A2Z offers **hotel recommendations** near your destination (airport-friendly stays first when you arrive by air). |
-| **My Trip (dashboard)** | Countdown to leave, current next step, warnings, map preview, timeline, ticket links, backup options, emergency reroute. |
-| **Settings** | Default preference and live-integration status. |
+| **Start page** | One action: *Plan a trip*. Shows your next saved trip and what A2Z does. No forms, no clutter. |
+| **Where from / where to** | Autocomplete as you type — "loga" surfaces *Logan International Airport (BOS)* instantly (alias + code aware), with live geocoder addresses merged in. A saved **Home** chip (star any address to save it), current location, and an **"I need a hotel there"** checkbox. No random suggestions. |
+| **When** | A real **month calendar** to pick the date, optional morning/midday/night window, travelers & bags. |
+| **How** | Mode cards showing **cheapest / average / priciest** price and **fastest / typical / slowest** door-to-door time per mode. |
+| **Pick your ticket** | Only the chosen mode's departures for your date — several per service, **Recommended** option pinned first (best mix of price, speed, timing). |
+| **Pick your stay** | Appears right after the ticket when the hotel box was checked — "What's the occasion?" re-ranks stays (convention-district first for work trips). |
+| **First / last mile** | How do you get to the station/airport, then to your hotel/destination — transit vs Uber/Uber Shuttle/Lyft/Empower/taxi, priced, with a weather- and luggage-aware recommendation. |
+| **Summary** | The assembled door-to-door plan: timeline, warnings, price breakdown, booking links (incl. your hotel), save. |
+| **My Trip (dashboard)** | Countdown, next step, your stay, reminders with grace periods, timeline, ticket links, backups, emergency reroute. |
+
+**Back and forward work at every step** — the top bar's arrows move through the interview and your answers are preserved; changing an earlier answer resets only what depends on it.
 
 ## Getting started
 

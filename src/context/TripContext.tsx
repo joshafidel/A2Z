@@ -7,7 +7,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 
 import * as storage from '../services/storageService';
 import type { TripSearchResults } from '../services/tripService';
-import type { RouteOption, SavedTrip, TravelPreference, TripSearch } from '../types';
+import type { HotelOption, RouteOption, SavedTrip, TravelPreference, TripSearch } from '../types';
 
 interface TripContextValue {
   search?: TripSearch;
@@ -18,7 +18,7 @@ interface TripContextValue {
 
   savedTrips: SavedTrip[];
   activeTrip?: SavedTrip;
-  saveTrip: (route: RouteOption) => Promise<boolean>;
+  saveTrip: (route: RouteOption, hotel?: HotelOption) => Promise<boolean>;
   deleteTrip: (tripId: string) => Promise<void>;
   setActiveTrip: (trip?: SavedTrip) => void;
 
@@ -58,9 +58,9 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const saveTrip = useCallback(
-    async (route: RouteOption) => {
+    async (route: RouteOption, hotel?: HotelOption) => {
       if (!search) return false;
-      const result = await storage.saveTrip(search, route);
+      const result = await storage.saveTrip(search, route, hotel);
       if (!result.ok) return false;
       setSavedTrips((prev) => [result.data, ...prev.filter((t) => t.route.id !== route.id)]);
       setActiveTrip(result.data);

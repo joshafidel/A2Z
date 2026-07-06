@@ -1264,6 +1264,211 @@ async function finalizeRoute(ctx: BuildContext, draft: DraftRoute): Promise<Rout
 }
 
 // ---------------------------------------------------------------------------
+// Ticket selection: every departure for one chosen mode
+// ---------------------------------------------------------------------------
+
+export interface TicketOption {
+  haul: LineHaulOption;
+  departureTime: string; // ISO
+  arrivalTime: string; // ISO
+  farePerPersonUsd?: number;
+  recommended: boolean;
+  /** Why this one is recommended / notable. */
+  note?: string;
+}
+
+/**
+ * Registry of expanded ticket instances so access-leg rebuilds can find
+ * hauls that aren't in the base catalogs.
+ */
+const ticketRegistry = new Map<string, LineHaulOption>();
+
+/**
+ * Expand each base service into departures across the day. Deterministic:
+ * same corridor + date always yields the same board.
+ */
+function expandDepartures(base: LineHaulOption): LineHaulOption[] {
+  const spacing = base.mode === 'flight' ? 120 : base.mode === 'bus' ? 150 : 60;
+  const count = base.mode === 'flight' ? 3 : 4;
+  const out: LineHaulOption[] = [];
+  for (let k = 0; k < count; k++) {
+    const offset = base.departOffsetMinutes + (k - 1) * spacing;
+    if (offset < 30) continue; // must leave enough time to reach the station
+    // Fares swing with demand: peak-ish departures cost more (deterministic).
+    const swing = 1 + ((k * 7 + base.id.length) % 5) * 0.06 - 0.12;
+    const fare =
+      base.farePerPersonUsd !== undefined
+        ? Math.round(base.farePerPersonUsd * swing)
+        : undefined;
+    const serviceNumber = base.serviceName.replace(/\d+$/, (n) => String(Number(n) + k * 2));
+    const instance: LineHaulOption = {
+      ...base,
+      id: `${base.id}-dep${k}`,
+      serviceName: serviceNumber,
+      departOffsetMinutes: offset,
+      farePerPersonUsd: fare,
+    };
+    ticketRegistry.set(instance.id, instance);
+    out.push(instance);
+  }
+  return out;
+}
+
+/**
+ * All bookable tickets for one mode — shown after the user picks how they
+ * want to travel. Sorted with the recommended option first.
+ */
+export async function getTicketsForMode(
+  corridor: CorridorKey,
+  mode: 'flight' | 'train' | 'bus',
+  search: TripSearch,
+): Promise<ServiceResult<TicketOption[]>> {
+  const result =
+    mode === 'flight'
+      ? await searchFlights(corridor, { departureIso: search.departureTime, travelers: search.travelers })
+      : mode === 'train'
+        ? await searchTrains(corridor)
+        : await searchBuses(corridor);
+  if (!result.ok) return result;
+  if (result.data.length === 0) {
+    return { ok: false, error: `No ${mode} service on this route.`, code: 'NOT_FOUND' };
+  }
+
+  const instances = result.data.flatMap((base) => expandDepartures(base));
+  const tickets: TicketOption[] = instances.map((haul) => {
+    const dep = addMinutes(search.departureTime, haul.departOffsetMinutes);
+    return {
+      haul,
+      departureTime: dep,
+      arrivalTime: addMinutes(dep, haul.durationMinutes),
+      farePerPersonUsd: haul.farePerPersonUsd,
+      recommended: false,
+    };
+  });
+
+  // Recommended = best blend of price, speed, and closeness to the
+  // requested departure time.
+  const fares = tickets.map((t) => t.farePerPersonUsd).filter((f): f is number => f !== undefined);
+  const minFare = Math.min(...fares);
+  const maxFare = Math.max(...fares);
+  const durations = tickets.map((t) => t.haul.durationMinutes);
+  const minDur = Math.min(...durations);
+  const maxDur = Math.max(...durations);
+  let best: { ticket: TicketOption; score: number } | undefined;
+  for (const t of tickets) {
+    const fareScore =
+      t.farePerPersonUsd === undefined || maxFare === minFare
+        ? 0.5
+        : 1 - (t.farePerPersonUsd - minFare) / (maxFare - minFare);
+    const durScore =
+      maxDur === minDur ? 0.5 : 1 - (t.haul.durationMinutes - minDur) / (maxDur - minDur);
+    const offsetPenalty = Math.min(1, Math.abs(t.haul.departOffsetMinutes - 90) / 300);
+    const score = fareScore * 0.4 + durScore * 0.35 + (1 - offsetPenalty) * 0.25;
+    if (!best || score > best.score) best = { ticket: t, score };
+  }
+  if (best) {
+    best.ticket.recommended = true;
+    best.ticket.note = 'Best mix of price, speed, and timing for your departure';
+  }
+
+  tickets.sort((a, b) => {
+    if (a.recommended !== b.recommended) return a.recommended ? -1 : 1;
+    return new Date(a.departureTime).getTime() - new Date(b.departureTime).getTime();
+  });
+  return { ok: true, data: tickets };
+}
+
+// ---------------------------------------------------------------------------
+// Mode statistics: cheapest / priciest / average — price and speed
+// ---------------------------------------------------------------------------
+
+export interface ModeStats {
+  price?: { min: number; max: number; avg: number };
+  durationMinutes: { min: number; max: number; avg: number };
+  optionCount: number;
+}
+
+/** Stats across a set of route options (drive/rental/transit groups). */
+export function statsFromRoutes(routes: RouteOption[]): ModeStats {
+  const prices = routes.map((r) => r.totalPriceUsd).filter((p): p is number => p !== undefined);
+  const durations = routes.map((r) => r.totalDurationMinutes);
+  const avg = (xs: number[]) => Math.round(xs.reduce((a, b) => a + b, 0) / xs.length);
+  return {
+    price:
+      prices.length > 0
+        ? { min: Math.min(...prices), max: Math.max(...prices), avg: avg(prices) }
+        : undefined,
+    durationMinutes: {
+      min: Math.min(...durations),
+      max: Math.max(...durations),
+      avg: avg(durations),
+    },
+    optionCount: routes.length,
+  };
+}
+
+/** Stats across a ticket board (fare per person + door-to-door time). */
+export function statsFromTickets(tickets: TicketOption[], accessOverheadMinutes: number): ModeStats {
+  const fares = tickets.map((t) => t.farePerPersonUsd).filter((f): f is number => f !== undefined);
+  const durations = tickets.map((t) => t.haul.durationMinutes + accessOverheadMinutes);
+  const avg = (xs: number[]) => Math.round(xs.reduce((a, b) => a + b, 0) / xs.length);
+  return {
+    price:
+      fares.length > 0
+        ? { min: Math.min(...fares), max: Math.max(...fares), avg: avg(fares) }
+        : undefined,
+    durationMinutes: {
+      min: Math.min(...durations),
+      max: Math.max(...durations),
+      avg: avg(durations),
+    },
+    optionCount: tickets.length,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Build the full door-to-door plan for one chosen ticket
+// ---------------------------------------------------------------------------
+
+export async function buildRouteForTicket(
+  search: TripSearch,
+  corridor: CorridorKey,
+  ticket: TicketOption,
+  firstMile?: AccessOption,
+  lastMile?: AccessOption,
+): Promise<ServiceResult<RouteOption>> {
+  const originKey = detectCityKey(search.origin.address);
+  const destKey = detectCityKey(search.destination.address);
+  const [originWx, destWx] = await Promise.all([
+    getWeather(WEATHER_CITY[originKey], search.departureTime),
+    getWeather(WEATHER_CITY[destKey], search.departureTime),
+  ]);
+  const ctx: BuildContext = {
+    search,
+    corridor,
+    originWeather: originWx.ok ? originWx.data : undefined,
+    destinationWeather: destWx.ok ? destWx.data : undefined,
+  };
+  const overrides: AccessOverrides = {
+    accessLegs: firstMile?.legs,
+    egressLegs: lastMile?.legs,
+    firstMileId: firstMile?.id,
+    lastMileId: lastMile?.id,
+  };
+  const haul = ticket.haul;
+  const route =
+    haul.mode === 'flight'
+      ? await buildFlightRoute(ctx, haul, overrides)
+      : haul.mode === 'train'
+        ? await buildLineHaulRoute(ctx, haul, 'to-train', 'from-train', 20, overrides)
+        : await buildLineHaulRoute(ctx, haul, 'to-bus', 'from-bus', 25, overrides);
+  if (!route) {
+    return { ok: false, error: 'Could not build a plan for this ticket.', code: 'UNAVAILABLE' };
+  }
+  return { ok: true, data: route };
+}
+
+// ---------------------------------------------------------------------------
 // Trip-builder rebuild: swap first/last-mile choices and regenerate the plan
 // ---------------------------------------------------------------------------
 
@@ -1294,7 +1499,8 @@ export async function rebuildRouteWithAccess(
     ...(trains.ok ? trains.data : []),
     ...(buses.ok ? buses.data : []),
   ];
-  const haul = hauls.find((h) => h.id === meta.haulId);
+  // Expanded ticket instances live in the registry, not the base catalogs.
+  const haul = ticketRegistry.get(meta.haulId) ?? hauls.find((h) => h.id === meta.haulId);
   if (!haul) {
     return { ok: false, error: 'The selected service is no longer available.', code: 'NOT_FOUND' };
   }

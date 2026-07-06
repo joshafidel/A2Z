@@ -348,6 +348,8 @@ export interface SavedTrip {
   savedAt: string; // ISO
   search: TripSearch;
   route: RouteOption;
+  /** Stay chosen during planning (when the user asked for a hotel). */
+  hotel?: HotelOption;
 }
 
 // ---------------------------------------------------------------------------

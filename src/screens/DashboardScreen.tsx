@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppButton } from '../components/AppButton';
@@ -153,6 +153,29 @@ export function DashboardScreen() {
         <TimelineView steps={route.timeline} />
       </Card>
 
+      {/* Chosen stay */}
+      {activeTrip.hotel && (
+        <Card>
+          <SectionHeader title="Your stay" subtitle={activeTrip.hotel.distanceLabel} />
+          <View style={styles.hotelRow}>
+            <View style={styles.flex}>
+              <Text style={styles.hotelName}>{activeTrip.hotel.name}</Text>
+              <Text style={styles.hotelMeta}>
+                {activeTrip.hotel.area} · ★ {activeTrip.hotel.rating.toFixed(1)} · $
+                {activeTrip.hotel.pricePerNightUsd}/night
+              </Text>
+            </View>
+            <AppButton
+              label="Book"
+              icon="bed"
+              variant="secondary"
+              small
+              onPress={() => Linking.openURL(activeTrip.hotel!.bookingUrl)}
+            />
+          </View>
+        </Card>
+      )}
+
       {/* Trip reminders */}
       <Card>
         <View style={styles.reminderHeader}>
@@ -285,6 +308,9 @@ const styles = StyleSheet.create({
   backupRow: { flexDirection: 'row', gap: spacing.md, alignItems: 'flex-start' },
   backupTitle: { fontSize: 14, fontWeight: '700', color: colors.text },
   backupDesc: { fontSize: 13, color: colors.textSecondary, marginTop: 2, lineHeight: 18 },
+  hotelRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  hotelName: { fontSize: 15, fontWeight: '700', color: colors.ink },
+  hotelMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
   reminderHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   reminderTitle: { ...typography.heading, color: colors.ink },
   reminderSubtitle: { fontSize: 12, color: colors.textSecondary, marginTop: 2, lineHeight: 17 },
