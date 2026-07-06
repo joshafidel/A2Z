@@ -10,9 +10,11 @@ import { TripProvider } from './src/context/TripContext';
 import type { PlanStackParamList, RootTabParamList } from './src/navigation/types';
 import { DashboardScreen } from './src/screens/DashboardScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
+import { HotelsScreen } from './src/screens/HotelsScreen';
 import { ResultsScreen } from './src/screens/ResultsScreen';
 import { RouteDetailScreen } from './src/screens/RouteDetailScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
+import { TripBuilderScreen } from './src/screens/TripBuilderScreen';
 import { colors } from './src/theme';
 
 const Stack = createNativeStackNavigator<PlanStackParamList>();
@@ -31,7 +33,9 @@ function PlanStack() {
     >
       <Stack.Screen name="Home" component={HomeScreen} options={{ headerShown: false }} />
       <Stack.Screen name="Results" component={ResultsScreen} options={{ title: 'Compare routes' }} />
+      <Stack.Screen name="TripBuilder" component={TripBuilderScreen} options={{ title: 'Build your trip' }} />
       <Stack.Screen name="RouteDetail" component={RouteDetailScreen} options={{ title: 'Trip plan' }} />
+      <Stack.Screen name="Hotels" component={HotelsScreen} options={{ title: 'Places to stay' }} />
     </Stack.Navigator>
   );
 }

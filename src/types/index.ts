@@ -54,11 +54,22 @@ export interface Place {
   cityKey?: string;
 }
 
+/** Optional coarse departure window; departureTime is derived from it. */
+export type TimeOfDay = 'morning' | 'midday' | 'night';
+
+export const TIME_OF_DAY_LABELS: Record<TimeOfDay, string> = {
+  morning: 'Morning',
+  midday: 'Midday',
+  night: 'Night',
+};
+
 export interface TripSearch {
   origin: Place;
   destination: Place;
   /** ISO datetime the user wants to depart (or arrive by, see anchor). */
   departureTime: string;
+  /** Coarse window the user picked (optional — not mandatory). */
+  timeOfDay?: TimeOfDay;
   travelers: number;
   /** Checked-size bags. Carry-ons are assumed free on most modes. */
   bags: number;
@@ -271,6 +282,20 @@ export interface RouteOption {
   score?: RecommendationScore;
   /** Alternative fallbacks if this route goes wrong. */
   backupPlans: BackupPlan[];
+  /**
+   * Rebuild metadata for line-haul routes: lets the trip builder swap the
+   * first/last-mile legs and regenerate the full plan.
+   */
+  builder?: {
+    corridor: string;
+    haulId: string;
+    accessFacet: string;
+    egressFacet: string;
+    stationBufferMinutes: number;
+    /** Currently selected access option ids (default = recommended). */
+    firstMileId?: string;
+    lastMileId?: string;
+  };
 }
 
 export interface BackupPlan {
@@ -280,6 +305,23 @@ export interface BackupPlan {
   mode: TransportMode;
   extraCostUsd?: number;
   extraMinutes?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Hotels
+// ---------------------------------------------------------------------------
+
+export interface HotelOption {
+  id: string;
+  name: string;
+  area: string; // "Downtown / South Station", "Near Logan Airport"
+  pricePerNightUsd: number;
+  rating: number; // 0–5
+  reviewCount: number;
+  distanceLabel: string; // "5 min walk from South Station"
+  nearAirport: boolean;
+  perks: string[];
+  bookingUrl: string;
 }
 
 // ---------------------------------------------------------------------------

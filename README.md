@@ -8,9 +8,10 @@ Built with **React Native + Expo + TypeScript**. All external data comes from a 
 
 | Screen | What it does |
 | --- | --- |
-| **Home** | Search form: origin, destination, date/time, travelers, bags, preference, existing-ticket toggle. Sample-trip quick fills. |
-| **Results** | 4–6 route options with *Best overall / Cheapest / Fastest / Least stressful* badges, weather strip, and a plain-English recommendation. |
-| **Route detail** | Full door-to-door timeline, airport plan (TSA, boarding, bag cutoff, leave-home-by), walk-vs-ride tradeoffs, price breakdown with hidden costs, booking deep links, backup plans. Save the trip from here. |
+| **Home** | Search form: origin (with **Use my current location**), destination (a full address, someone's house, or just a city), a 14-day date picker, an optional morning/midday/night departure window, travelers, bags, preference, existing-ticket toggle. Sample-trip quick fills. |
+| **Results** | Route options grouped into collapsible **dropdowns by mode — Flights, Trains, Buses, Cars & rideshare, Transit** — with *Best overall / Cheapest / Fastest / Least stressful* badges, weather strip, and a plain-English recommendation. |
+| **Trip builder** | Step-by-step booking: the main travel method is Step 1; Steps 2–3 pick how to reach the station/airport and finish the trip, with live price comparisons across **transit, Uber, Uber Shuttle, Lyft, Empower, and taxi** plus a weather/luggage-aware recommendation. |
+| **Route detail** | Full door-to-door timeline, airport plan (TSA, boarding, bag cutoff, leave-home-by), walk-vs-ride tradeoffs, price breakdown with hidden costs, booking deep links, backup plans. Save the trip from here — then A2Z offers **hotel recommendations** near your destination (airport-friendly stays first when you arrive by air). |
 | **My Trip (dashboard)** | Countdown to leave, current next step, warnings, map preview, timeline, ticket links, backup options, emergency reroute. |
 | **Settings** | Default preference and live-integration status. |
 
@@ -84,7 +85,10 @@ A2Z/
     │   ├── busService.ts       # → bus aggregator APIs / GTFS
     │   ├── weatherService.ts   # → OpenWeather / WeatherAPI
     │   ├── mapsService.ts      # → Google Maps Directions / Transitland
-    │   ├── rideshareService.ts # → Uber / Lyft estimates
+    │   ├── rideshareService.ts # → Uber / Uber Shuttle / Lyft / Empower / taxi
+    │   ├── accessService.ts    # first/last-mile options + recommendations
+    │   ├── hotelService.ts     # → Amadeus Hotels / Booking.com
+    │   ├── locationService.ts  # geolocation + (mock) reverse geocoding
     │   ├── tsaService.ts       # → TSA wait data + airport plan builder
     │   ├── deepLinkService.ts  # deep links + web fallbacks (pure)
     │   ├── recommendationService.ts # scoring engine (pure, unit-tested)

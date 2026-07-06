@@ -46,8 +46,9 @@ import type { LineHaulOption } from './legTypes';
 import { getLocalLegs } from './mapsService';
 import type { LocalLeg } from './mapsService';
 import { rankRoutes } from './recommendationService';
-import { estimateRide } from './rideshareService';
+import { estimatePrimaryRide, estimateRide } from './rideshareService';
 import { searchTrains } from './trainService';
+import type { AccessOption } from './accessService';
 import { buildAirportIntel } from './tsaService';
 import { getWeather } from './weatherService';
 
@@ -279,8 +280,8 @@ async function buildWalkAdvice(
     const wx = ctx.destinationWeather ?? ctx.originWeather;
     const distance = seg.distanceMiles ?? seg.durationMinutes / 20;
     const rideMinutes = Math.max(4, Math.round(seg.durationMinutes * 0.4));
-    const est = await estimateRide(distance, rideMinutes);
-    const ride = est.ok ? est.data[0] : undefined;
+    const est = await estimatePrimaryRide(distance, rideMinutes);
+    const ride = est.ok ? est.data : undefined;
 
     const badWeather = (wx?.discomfortScore ?? 0) >= 0.6;
     const shouldRide =
@@ -357,6 +358,14 @@ async function buildIntercityRoutes(ctx: BuildContext): Promise<RouteOption[]> {
   return routes;
 }
 
+/** Chosen first/last-mile overrides coming from the trip builder. */
+interface AccessOverrides {
+  accessLegs?: LocalLeg[];
+  egressLegs?: LocalLeg[];
+  firstMileId?: string;
+  lastMileId?: string;
+}
+
 /** Train or bus door-to-door: access legs → line haul → egress legs. */
 async function buildLineHaulRoute(
   ctx: BuildContext,
@@ -364,13 +373,19 @@ async function buildLineHaulRoute(
   accessFacet: string,
   egressFacet: string,
   stationBufferMinutes: number,
+  overrides: AccessOverrides = {},
 ): Promise<RouteOption | undefined> {
   const { search } = ctx;
-  const [access, egress] = await Promise.all([
-    getLocalLegs(ctx.corridor, accessFacet),
-    getLocalLegs(ctx.corridor, egressFacet),
+  const [accessDefault, egressDefault] = await Promise.all([
+    overrides.accessLegs ? undefined : getLocalLegs(ctx.corridor, accessFacet),
+    overrides.egressLegs ? undefined : getLocalLegs(ctx.corridor, egressFacet),
   ]);
-  if (!access.ok || !egress.ok) return undefined; // provider data unavailable → skip mode
+  const accessLegs = overrides.accessLegs ?? (accessDefault?.ok ? accessDefault.data.legs : undefined);
+  const egressLegs = overrides.egressLegs ?? (egressDefault?.ok ? egressDefault.data.legs : undefined);
+  if (!accessLegs || !egressLegs) return undefined; // provider data unavailable → skip mode
+
+  const access = { data: { legs: accessLegs } };
+  const egress = { data: { legs: egressLegs } };
 
   const haulDeparture = addMinutes(search.departureTime, haul.departOffsetMinutes);
 
@@ -488,6 +503,15 @@ async function buildLineHaulRoute(
     bufferMinutes: stationBufferMinutes,
     primaryMode: haul.mode,
     backups: lineHaulBackups(haul),
+    builder: {
+      corridor: ctx.corridor,
+      haulId: haul.id,
+      accessFacet,
+      egressFacet,
+      stationBufferMinutes,
+      firstMileId: overrides.firstMileId,
+      lastMileId: overrides.lastMileId,
+    },
   });
 }
 
@@ -536,13 +560,19 @@ function lineHaulBackups(haul: LineHaulOption): BackupPlan[] {
 async function buildFlightRoute(
   ctx: BuildContext,
   flight: LineHaulOption,
+  overrides: AccessOverrides = {},
 ): Promise<RouteOption | undefined> {
   const { search } = ctx;
-  const [access, egress] = await Promise.all([
-    getLocalLegs(ctx.corridor, 'to-airport'),
-    getLocalLegs(ctx.corridor, 'from-airport'),
+  const [accessDefault, egressDefault] = await Promise.all([
+    overrides.accessLegs ? undefined : getLocalLegs(ctx.corridor, 'to-airport'),
+    overrides.egressLegs ? undefined : getLocalLegs(ctx.corridor, 'from-airport'),
   ]);
-  if (!access.ok || !egress.ok) return undefined;
+  const accessLegs = overrides.accessLegs ?? (accessDefault?.ok ? accessDefault.data.legs : undefined);
+  const egressLegs = overrides.egressLegs ?? (egressDefault?.ok ? egressDefault.data.legs : undefined);
+  if (!accessLegs || !egressLegs) return undefined;
+
+  const access = { data: { legs: accessLegs } };
+  const egress = { data: { legs: egressLegs } };
 
   const flightDeparture = addMinutes(search.departureTime, flight.departOffsetMinutes);
   const airportCode = flight.fromStation.match(/\(([A-Z]{3})\)/)?.[1] ?? 'LGA';
@@ -721,6 +751,15 @@ async function buildFlightRoute(
     bufferMinutes: intel ? minutesBetween(intel.recommendedArrivalTime, flightDeparture) : 90,
     primaryMode: 'flight',
     airportIntel: intel,
+    builder: {
+      corridor: ctx.corridor,
+      haulId: flight.id,
+      accessFacet: 'to-airport',
+      egressFacet: 'from-airport',
+      stationBufferMinutes: 0,
+      firstMileId: overrides.firstMileId,
+      lastMileId: overrides.lastMileId,
+    },
     backups: [
       {
         id: 'bk-next-flight',
@@ -923,7 +962,8 @@ async function buildRideshareRoute(ctx: BuildContext): Promise<RouteOption | und
   const isAirport = /airport|jfk|ewr|terminal/i.test(search.destination.address + leg.to);
   const est = await estimateRide(leg.distanceMiles, leg.durationMinutes, { airport: isAirport });
   if (!est.ok) return undefined;
-  const uber = est.data[0];
+  const uber = est.data.find((e) => e.provider === 'Uber') ?? est.data[0];
+  const alternatives = est.data.filter((e) => e.provider !== uber.provider);
 
   const leaveTime = search.departureTime;
   const pickupWait = uber.etaMinutes;
@@ -978,14 +1018,12 @@ async function buildRideshareRoute(ctx: BuildContext): Promise<RouteOption | und
     totalDuration: minutesBetween(leaveTime, arrival),
     bufferMinutes: pickupWait,
     primaryMode: 'rideshare',
-    backups: [
-      {
-        id: 'bk-lyft',
-        title: 'Compare with Lyft',
-        description: `Lyft estimate: $${est.data[1]?.lowUsd}–$${est.data[1]?.highUsd} for the same trip.`,
-        mode: 'rideshare',
-      },
-    ],
+    backups: alternatives.slice(0, 3).map((alt) => ({
+      id: `bk-${alt.provider.toLowerCase().replace(/\s+/g, '-')}`,
+      title: `Compare with ${alt.provider}`,
+      description: `${alt.provider} estimate: $${alt.lowUsd}–$${alt.highUsd} (~${alt.rideMinutes} min)${alt.note ? ` — ${alt.note}` : ''}.`,
+      mode: 'rideshare' as const,
+    })),
   });
 }
 
@@ -1013,6 +1051,7 @@ interface DraftRoute {
   primaryMode: TransportMode;
   airportIntel?: RouteOption['airportIntel'];
   backups: BackupPlan[];
+  builder?: RouteOption['builder'];
 }
 
 async function finalizeRoute(ctx: BuildContext, draft: DraftRoute): Promise<RouteOption> {
@@ -1047,7 +1086,87 @@ async function finalizeRoute(ctx: BuildContext, draft: DraftRoute): Promise<Rout
     arrivalBufferMinutes: draft.bufferMinutes,
     badges: [],
     backupPlans: draft.backups,
+    builder: draft.builder,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Trip-builder rebuild: swap first/last-mile choices and regenerate the plan
+// ---------------------------------------------------------------------------
+
+/**
+ * Rebuild a line-haul route with the user's chosen first/last-mile access
+ * options (from accessService). Keeps the route id, badges, and score so
+ * the rest of the app treats it as the same option.
+ */
+export async function rebuildRouteWithAccess(
+  search: TripSearch,
+  route: RouteOption,
+  firstMile?: AccessOption,
+  lastMile?: AccessOption,
+): Promise<ServiceResult<RouteOption>> {
+  const meta = route.builder;
+  if (!meta) {
+    return { ok: false, error: 'This route has no configurable access legs.', code: 'NOT_FOUND' };
+  }
+  const corridor = meta.corridor as CorridorKey;
+
+  const [flights, trains, buses] = await Promise.all([
+    searchFlights(corridor),
+    searchTrains(corridor),
+    searchBuses(corridor),
+  ]);
+  const hauls: LineHaulOption[] = [
+    ...(flights.ok ? flights.data : []),
+    ...(trains.ok ? trains.data : []),
+    ...(buses.ok ? buses.data : []),
+  ];
+  const haul = hauls.find((h) => h.id === meta.haulId);
+  if (!haul) {
+    return { ok: false, error: 'The selected service is no longer available.', code: 'NOT_FOUND' };
+  }
+
+  const originKey = detectCityKey(search.origin.address);
+  const destKey = detectCityKey(search.destination.address);
+  const [originWx, destWx] = await Promise.all([
+    getWeather(WEATHER_CITY[originKey], search.departureTime),
+    getWeather(WEATHER_CITY[destKey], search.departureTime),
+  ]);
+  const ctx: BuildContext = {
+    search,
+    corridor,
+    originWeather: originWx.ok ? originWx.data : undefined,
+    destinationWeather: destWx.ok ? destWx.data : undefined,
+  };
+
+  const overrides: AccessOverrides = {
+    accessLegs: firstMile?.legs,
+    egressLegs: lastMile?.legs,
+    firstMileId: firstMile?.id,
+    lastMileId: lastMile?.id,
+  };
+
+  const rebuilt =
+    haul.mode === 'flight'
+      ? await buildFlightRoute(ctx, haul, overrides)
+      : await buildLineHaulRoute(
+          ctx,
+          haul,
+          meta.accessFacet,
+          meta.egressFacet,
+          meta.stationBufferMinutes,
+          overrides,
+        );
+
+  if (!rebuilt) {
+    return { ok: false, error: 'Could not rebuild this route.', code: 'UNAVAILABLE' };
+  }
+
+  // Preserve identity so the results list and saved trips keep working.
+  rebuilt.id = route.id;
+  rebuilt.badges = route.badges;
+  rebuilt.score = route.score;
+  return { ok: true, data: rebuilt };
 }
 
 function addLocalCostItems(

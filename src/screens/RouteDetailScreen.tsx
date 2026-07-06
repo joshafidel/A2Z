@@ -23,6 +23,7 @@ export function RouteDetailScreen({ navigation, route: navRoute }: RouteDetailSc
   const { results, savedTrips, saveTrip } = useTrip();
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [hotelPrompt, setHotelPrompt] = useState(false);
 
   const route = useMemo(() => {
     const fromResults = results?.routes.find((r) => r.id === routeId);
@@ -47,7 +48,10 @@ export function RouteDetailScreen({ navigation, route: navRoute }: RouteDetailSc
     setSaving(true);
     const ok = await saveTrip(route);
     setSaving(false);
-    if (ok) setSaved(true);
+    if (ok) {
+      setSaved(true);
+      setHotelPrompt(true); // booked → offer a place to stay
+    }
   };
 
   const intel = route.airportIntel;
@@ -190,15 +194,49 @@ export function RouteDetailScreen({ navigation, route: navRoute }: RouteDetailSc
         )}
       </ScrollView>
 
-      {/* Sticky save CTA */}
+      {/* Sticky save CTA / post-save hotel prompt */}
       <View style={styles.footer}>
-        <AppButton
-          label={alreadySaved ? 'Saved — view My Trip' : 'Save this trip'}
-          icon={alreadySaved ? 'checkmark-circle' : 'bookmark'}
-          onPress={onSave}
-          loading={saving}
-          disabled={alreadySaved}
-        />
+        {hotelPrompt ? (
+          <View style={styles.hotelPrompt}>
+            <View style={styles.hotelPromptHeader}>
+              <Ionicons name="bed" size={20} color={colors.primary} />
+              <View style={styles.flex}>
+                <Text style={styles.hotelPromptTitle}>Trip saved! Need a place to stay?</Text>
+                <Text style={styles.hotelPromptText}>
+                  We can recommend hotels near your destination
+                  {route.primaryMode === 'flight' ? ' and the airport' : ''}.
+                </Text>
+              </View>
+            </View>
+            <View style={styles.hotelPromptButtons}>
+              <AppButton
+                label="Not now"
+                variant="ghost"
+                small
+                style={styles.flex}
+                onPress={() => setHotelPrompt(false)}
+              />
+              <AppButton
+                label="Find hotels"
+                icon="bed"
+                small
+                style={styles.flex}
+                onPress={() => {
+                  setHotelPrompt(false);
+                  navigation.navigate('Hotels');
+                }}
+              />
+            </View>
+          </View>
+        ) : (
+          <AppButton
+            label={alreadySaved ? 'Saved — view My Trip' : 'Save this trip'}
+            icon={alreadySaved ? 'checkmark-circle' : 'bookmark'}
+            onPress={onSave}
+            loading={saving}
+            disabled={alreadySaved}
+          />
+        )}
       </View>
     </View>
   );
@@ -291,4 +329,9 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: colors.border,
   },
+  hotelPrompt: { gap: spacing.md },
+  hotelPromptHeader: { flexDirection: 'row', gap: spacing.md, alignItems: 'flex-start' },
+  hotelPromptTitle: { fontSize: 15, fontWeight: '800', color: colors.ink },
+  hotelPromptText: { fontSize: 13, color: colors.textSecondary, marginTop: 2, lineHeight: 18 },
+  hotelPromptButtons: { flexDirection: 'row', gap: spacing.md },
 });

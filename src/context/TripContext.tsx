@@ -13,6 +13,8 @@ interface TripContextValue {
   search?: TripSearch;
   results?: TripSearchResults;
   setSearchResults: (search: TripSearch, results: TripSearchResults) => void;
+  /** Swap a route in the current results (after a trip-builder rebuild). */
+  replaceRoute: (route: RouteOption) => void;
 
   savedTrips: SavedTrip[];
   activeTrip?: SavedTrip;
@@ -47,6 +49,14 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     setResults(r);
   }, []);
 
+  const replaceRoute = useCallback((route: RouteOption) => {
+    setResults((prev) =>
+      prev
+        ? { ...prev, routes: prev.routes.map((r) => (r.id === route.id ? route : r)) }
+        : prev,
+    );
+  }, []);
+
   const saveTrip = useCallback(
     async (route: RouteOption) => {
       if (!search) return false;
@@ -73,6 +83,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
       search,
       results,
       setSearchResults,
+      replaceRoute,
       savedTrips,
       activeTrip,
       saveTrip,
@@ -81,7 +92,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
       defaultPreference,
       setDefaultPreference,
     }),
-    [search, results, setSearchResults, savedTrips, activeTrip, saveTrip, deleteTrip, defaultPreference],
+    [search, results, setSearchResults, replaceRoute, savedTrips, activeTrip, saveTrip, deleteTrip, defaultPreference],
   );
 
   return <TripContext.Provider value={value}>{children}</TripContext.Provider>;

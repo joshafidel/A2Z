@@ -19,9 +19,12 @@ import { Card } from '../components/Card';
 import { Chip } from '../components/Chip';
 import { useTrip } from '../context/TripContext';
 import type { HomeScreenProps } from '../navigation/types';
+import { getCurrentLocation } from '../services/locationService';
 import { colors, radii, spacing, typography } from '../theme';
 import {
   PREFERENCE_LABELS,
+  TIME_OF_DAY_LABELS,
+  type TimeOfDay,
   type TransportMode,
   type TravelPreference,
   type TripSearch,
@@ -64,22 +67,30 @@ const SAMPLE_TRIPS: Array<{ label: string; origin: string; destination: string; 
   },
 ];
 
-/** Quick departure choices — replace with a full date-time picker post-MVP. */
-function departureChoices(): Array<{ label: string; iso: string }> {
-  const mk = (daysAhead: number, hour: number, label: string) => {
+/** The next 14 days as selectable travel dates. */
+function dateChoices(): Array<{ label: string; sublabel: string; dayOffset: number }> {
+  const out: Array<{ label: string; sublabel: string; dayOffset: number }> = [];
+  for (let i = 0; i < 14; i++) {
     const d = new Date();
-    d.setDate(d.getDate() + daysAhead);
-    d.setHours(hour, 0, 0, 0);
-    return { label, iso: d.toISOString() };
-  };
-  return [
-    mk(0, 8, 'Today 8 AM'),
-    mk(0, 14, 'Today 2 PM'),
-    mk(1, 7, 'Tomorrow 7 AM'),
-    mk(1, 9, 'Tomorrow 9 AM'),
-    mk(2, 8, 'In 2 days, 8 AM'),
-  ];
+    d.setDate(d.getDate() + i);
+    out.push({
+      label: i === 0 ? 'Today' : i === 1 ? 'Tmrw' : d.toLocaleDateString([], { weekday: 'short' }),
+      sublabel: d.toLocaleDateString([], { month: 'short', day: 'numeric' }),
+      dayOffset: i,
+    });
+  }
+  return out;
 }
+
+/** Departure hour for each (optional) time-of-day window. */
+const TIME_OF_DAY_HOURS: Record<TimeOfDay, number> = { morning: 8, midday: 13, night: 19 };
+const DEFAULT_HOUR = 9;
+
+const TIME_OF_DAY_ICONS: Record<TimeOfDay, keyof typeof Ionicons.glyphMap> = {
+  morning: 'sunny-outline',
+  midday: 'partly-sunny-outline',
+  night: 'moon-outline',
+};
 
 const PREFERENCE_ICONS: Record<TravelPreference, keyof typeof Ionicons.glyphMap> = {
   cheapest: 'pricetag',
@@ -95,10 +106,14 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
   const { defaultPreference } = useTrip();
 
   const [origin, setOrigin] = useState('');
+  const [originIsCurrent, setOriginIsCurrent] = useState(false);
+  const [locating, setLocating] = useState(false);
+  const [locationError, setLocationError] = useState<string>();
   const [destination, setDestination] = useState('');
   const [destLabel, setDestLabel] = useState<string>();
-  const [choices] = useState(departureChoices);
-  const [departureIso, setDepartureIso] = useState(choices[2].iso);
+  const [dates] = useState(dateChoices);
+  const [dayOffset, setDayOffset] = useState(1); // default tomorrow
+  const [timeOfDay, setTimeOfDay] = useState<TimeOfDay>(); // optional
   const [travelers, setTravelers] = useState(1);
   const [bags, setBags] = useState(1);
   const [preference, setPreference] = useState<TravelPreference>(defaultPreference);
@@ -110,18 +125,44 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
 
   const applySample = (s: (typeof SAMPLE_TRIPS)[number]) => {
     setOrigin(s.origin);
+    setOriginIsCurrent(false);
     setDestination(s.destination);
     setDestLabel(s.destLabel);
     setTouched(false);
+  };
+
+  const useCurrentLocation = async () => {
+    setLocating(true);
+    setLocationError(undefined);
+    const result = await getCurrentLocation();
+    setLocating(false);
+    if (result.ok) {
+      setOrigin(result.data.address);
+      setOriginIsCurrent(true);
+    } else {
+      setLocationError(result.error);
+    }
+  };
+
+  const departureIso = () => {
+    const d = new Date();
+    d.setDate(d.getDate() + dayOffset);
+    d.setHours(timeOfDay ? TIME_OF_DAY_HOURS[timeOfDay] : DEFAULT_HOUR, 0, 0, 0);
+    return d.toISOString();
   };
 
   const plan = () => {
     setTouched(true);
     if (!valid) return;
     const search: TripSearch = {
-      origin: { address: origin.trim(), label: 'Home' },
-      destination: { address: destination.trim(), label: destLabel ?? 'destination' },
-      departureTime: departureIso,
+      origin: { address: origin.trim(), label: originIsCurrent ? 'Current location' : 'Home' },
+      destination: {
+        address: destination.trim(),
+        // Fall back to the first chunk of the typed address ("Downtown hotel").
+        label: destLabel ?? destination.trim().split(',')[0],
+      },
+      departureTime: departureIso(),
+      timeOfDay,
       travelers,
       bags,
       preference,
@@ -164,14 +205,36 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
               iconColor={colors.primary}
               placeholder="Starting address"
               value={origin}
-              onChangeText={setOrigin}
+              onChangeText={(t) => {
+                setOrigin(t);
+                setOriginIsCurrent(false);
+              }}
               error={touched && origin.trim().length <= 3 ? 'Enter a starting address' : undefined}
             />
+            <Pressable
+              onPress={useCurrentLocation}
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.locationButton, pressed && styles.locationPressed]}
+            >
+              <Ionicons
+                name={originIsCurrent ? 'locate' : 'locate-outline'}
+                size={15}
+                color={colors.primary}
+              />
+              <Text style={styles.locationText}>
+                {locating
+                  ? 'Finding your location…'
+                  : originIsCurrent
+                    ? 'Using your current location'
+                    : 'Use my current location'}
+              </Text>
+            </Pressable>
+            {locationError ? <Text style={styles.fieldError}>{locationError}</Text> : null}
             <View style={styles.divider} />
             <Field
               icon="location"
               iconColor={colors.danger}
-              placeholder="Destination address"
+              placeholder="Destination — address, hotel, or just a city"
               value={destination}
               onChangeText={(t) => {
                 setDestination(t);
@@ -194,18 +257,43 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
             ))}
           </ScrollView>
 
-          {/* Departure */}
-          <Text style={styles.sectionLabel}>WHEN ARE YOU LEAVING?</Text>
+          {/* Travel date */}
+          <Text style={styles.sectionLabel}>TRAVEL DATE</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-            {choices.map((c) => (
+            {dates.map((d) => {
+              const selected = dayOffset === d.dayOffset;
+              return (
+                <Pressable
+                  key={d.dayOffset}
+                  onPress={() => setDayOffset(d.dayOffset)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  style={[styles.dateChip, selected && styles.dateChipSelected]}
+                >
+                  <Text style={[styles.dateChipDay, selected && styles.dateChipTextSelected]}>
+                    {d.label}
+                  </Text>
+                  <Text style={[styles.dateChipDate, selected && styles.dateChipTextSelected]}>
+                    {d.sublabel}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+
+          {/* Optional departure window */}
+          <Text style={styles.sectionLabel}>DEPARTURE WINDOW (OPTIONAL)</Text>
+          <View style={styles.prefGrid}>
+            {(Object.keys(TIME_OF_DAY_LABELS) as TimeOfDay[]).map((t) => (
               <Chip
-                key={c.iso}
-                label={c.label}
-                selected={departureIso === c.iso}
-                onPress={() => setDepartureIso(c.iso)}
+                key={t}
+                label={TIME_OF_DAY_LABELS[t]}
+                icon={TIME_OF_DAY_ICONS[t]}
+                selected={timeOfDay === t}
+                onPress={() => setTimeOfDay((prev) => (prev === t ? undefined : t))}
               />
             ))}
-          </ScrollView>
+          </View>
 
           {/* Party */}
           <View style={styles.stepperRow}>
@@ -376,6 +464,32 @@ const styles = StyleSheet.create({
   },
   searchCard: { gap: spacing.xs },
   divider: { height: 1, backgroundColor: colors.border, marginLeft: 26 },
+  locationButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginLeft: 26,
+    marginBottom: spacing.sm,
+    minHeight: 32,
+  },
+  locationPressed: { opacity: 0.7 },
+  locationText: { fontSize: 13, fontWeight: '700', color: colors.primary },
+  dateChip: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceAlt,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    minWidth: 72,
+    minHeight: 56,
+  },
+  dateChipSelected: { backgroundColor: colors.primary, borderColor: colors.primary },
+  dateChipDay: { fontSize: 13, fontWeight: '700', color: colors.textSecondary },
+  dateChipDate: { fontSize: 12, fontWeight: '500', color: colors.textMuted, marginTop: 1 },
+  dateChipTextSelected: { color: '#FFFFFF' },
   fieldRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, minHeight: 46 },
   input: { flex: 1, fontSize: 16, color: colors.text, paddingVertical: spacing.sm },
   fieldError: { color: colors.danger, fontSize: 12, fontWeight: '600', marginLeft: 26, marginBottom: 4 },
