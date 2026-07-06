@@ -109,6 +109,37 @@ describe('rental car routes', () => {
   });
 });
 
+describe('stay-area hotel recommendations', () => {
+  it('puts beach hotels first when the traveler wants the beach (Miami)', async () => {
+    const result = await getHotelRecommendations('unknown', {
+      destinationQuery: 'Downtown Miami, FL',
+      area: 'beach',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data[0].tags).toContain('beach');
+    expect(result.data[0].name).toContain('South Beach');
+  });
+
+  it('sorts by price when asked', async () => {
+    const result = await getHotelRecommendations('boston', { sortByPrice: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const prices = result.data.map((h) => h.pricePerNightUsd);
+    expect([...prices].sort((a, b) => a - b)).toEqual(prices);
+  });
+
+  it('honors a custom area entry', async () => {
+    const result = await getHotelRecommendations('boston', {
+      area: 'custom',
+      customArea: 'South Station',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data[0].distanceLabel).toContain('South Station');
+  });
+});
+
 describe('purpose-aware hotel recommendations', () => {
   it('puts convention-district hotels first for work trips', async () => {
     const result = await getHotelRecommendations('boston', { purpose: 'work' });

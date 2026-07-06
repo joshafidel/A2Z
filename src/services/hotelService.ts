@@ -14,14 +14,16 @@
  * and keep the purpose-scoring below.
  */
 
+import { findCityCoords } from '../data/airports';
 import type { CityKey } from '../data/cities';
-import type { HotelOption, HotelTag, ServiceResult, TripPurpose } from '../types';
+import type { HotelArea, HotelOption, HotelTag, ServiceResult, TripPurpose } from '../types';
 import { mockDelay } from './config';
 import { buildHotelSearchLink } from './deepLinkService';
 
 type HotelSeed = Omit<HotelOption, 'bookingUrl' | 'whyRecommended'> & { searchQuery: string };
 
-const HOTELS: Partial<Record<CityKey, HotelSeed[]>> = {
+/** Hotel groups keyed by city group name. */
+const HOTELS: Record<string, HotelSeed[]> = {
   boston: [
     {
       id: 'bos-1',
@@ -33,7 +35,7 @@ const HOTELS: Partial<Record<CityKey, HotelSeed[]>> = {
       distanceLabel: '6 min walk from South Station',
       nearAirport: false,
       perks: ['Free Wi-Fi', 'Late checkout', 'Gym'],
-      tags: ['business', 'transit'],
+      tags: ['business', 'transit', 'downtown'],
       searchQuery: 'Downtown Crossing Boston hotel',
     },
     {
@@ -87,7 +89,7 @@ const HOTELS: Partial<Record<CityKey, HotelSeed[]>> = {
       distanceLabel: '8 min walk from Union Station',
       nearAirport: false,
       perks: ['Free Wi-Fi', 'Rooftop bar'],
-      tags: ['business', 'transit'],
+      tags: ['business', 'transit', 'downtown'],
       searchQuery: 'Capitol Hill Washington DC hotel',
     },
     {
@@ -100,7 +102,7 @@ const HOTELS: Partial<Record<CityKey, HotelSeed[]>> = {
       distanceLabel: '3 blocks from the Walter E. Washington Convention Center',
       nearAirport: false,
       perks: ['Breakfast included', 'Gym', 'Pet friendly'],
-      tags: ['convention', 'business'],
+      tags: ['convention', 'business', 'downtown'],
       searchQuery: 'Convention Center Washington DC hotel',
     },
     {
@@ -130,6 +132,60 @@ const HOTELS: Partial<Record<CityKey, HotelSeed[]>> = {
       searchQuery: 'National Mall Washington DC hotel',
     },
   ],
+  miami: [
+    {
+      id: 'mia-1',
+      name: 'South Beach Shorehouse',
+      area: 'South Beach',
+      pricePerNightUsd: 259,
+      rating: 4.7,
+      reviewCount: 3890,
+      distanceLabel: 'Steps from the sand on Ocean Drive',
+      nearAirport: false,
+      perks: ['Beachfront', 'Pool', 'Rooftop bar'],
+      tags: ['beach', 'attractions'],
+      searchQuery: 'South Beach Miami hotel',
+    },
+    {
+      id: 'mia-2',
+      name: 'Brickell City Hotel',
+      area: 'Brickell / Downtown',
+      pricePerNightUsd: 189,
+      rating: 4.5,
+      reviewCount: 2210,
+      distanceLabel: 'Downtown Miami · Metromover at the door',
+      nearAirport: false,
+      perks: ['Free Wi-Fi', 'Gym', 'Bay views'],
+      tags: ['downtown', 'business', 'transit'],
+      searchQuery: 'Brickell Miami hotel',
+    },
+    {
+      id: 'mia-3',
+      name: 'MIA Gateway Inn',
+      area: 'Airport District',
+      pricePerNightUsd: 129,
+      rating: 4.1,
+      reviewCount: 1540,
+      distanceLabel: '5 min free shuttle to MIA terminals',
+      nearAirport: true,
+      perks: ['Free airport shuttle', '24h check-in'],
+      tags: ['airport'],
+      searchQuery: 'Miami airport hotel',
+    },
+    {
+      id: 'mia-4',
+      name: 'Wynwood Arts Loft',
+      area: 'Wynwood',
+      pricePerNightUsd: 175,
+      rating: 4.6,
+      reviewCount: 1980,
+      distanceLabel: 'In the middle of the Wynwood Walls art district',
+      nearAirport: false,
+      perks: ['Design rooms', 'Bike rentals'],
+      tags: ['attractions', 'family'],
+      searchQuery: 'Wynwood Miami hotel',
+    },
+  ],
   nyc: [
     {
       id: 'nyc-1',
@@ -141,7 +197,7 @@ const HOTELS: Partial<Record<CityKey, HotelSeed[]>> = {
       distanceLabel: '4 min walk from Penn Station · near Javits Center',
       nearAirport: false,
       perks: ['Free Wi-Fi', '24h front desk'],
-      tags: ['business', 'convention', 'transit'],
+      tags: ['business', 'convention', 'transit', 'downtown'],
       searchQuery: 'Penn Station New York hotel',
     },
     {
@@ -171,7 +227,7 @@ const GENERIC_HOTELS: HotelSeed[] = [
     distanceLabel: 'Walkable to downtown transit',
     nearAirport: false,
     perks: ['Free Wi-Fi', 'Breakfast included'],
-    tags: ['business', 'transit', 'attractions'],
+    tags: ['business', 'transit', 'attractions', 'downtown'],
     searchQuery: 'city center hotel',
   },
   {
@@ -212,10 +268,55 @@ const PURPOSE_FIT: Record<TripPurpose, { tags: HotelTag[]; why: Partial<Record<H
   },
 };
 
+/** Which tags each stay-area preference targets, and the copy explaining it. */
+const AREA_FIT: Record<Exclude<HotelArea, 'custom'>, { tags: HotelTag[]; why: string }> = {
+  airport: { tags: ['airport'], why: 'Minutes from the terminal.' },
+  beach: { tags: ['beach'], why: 'Right by the beach.' },
+  attraction: { tags: ['attractions', 'convention'], why: 'Next to the main sights.' },
+  downtown: { tags: ['downtown', 'business', 'transit'], why: 'In the heart of downtown.' },
+};
+
+/** Map a CityKey and/or free-text destination to a hotel group. */
+function resolveHotelGroup(cityKey: CityKey, destinationQuery?: string): HotelSeed[] | undefined {
+  const byKey: Partial<Record<CityKey, string>> = {
+    boston: 'boston',
+    'bos-airport': 'boston',
+    dc: 'dc',
+    nyc: 'nyc',
+    jfk: 'nyc',
+    lga: 'nyc',
+    ewr: 'nyc',
+  };
+  const keyGroup = byKey[cityKey];
+  if (keyGroup && HOTELS[keyGroup]) return HOTELS[keyGroup];
+
+  // Unknown corridor — resolve through real geography (Miami, etc.).
+  if (destinationQuery) {
+    const city = findCityCoords(destinationQuery)?.city.toLowerCase();
+    const byName: Record<string, string> = {
+      miami: 'miami',
+      'fort lauderdale': 'miami',
+      boston: 'boston',
+      washington: 'dc',
+      'new york': 'nyc',
+      newark: 'nyc',
+    };
+    const group = city ? byName[city] : undefined;
+    if (group && HOTELS[group]) return HOTELS[group];
+  }
+  return undefined;
+}
+
 export interface HotelSearchOptions {
   arrivingByAir?: boolean;
   destinationQuery?: string;
   purpose?: TripPurpose;
+  /** Where the traveler wants to stay (asked before showing hotels). */
+  area?: HotelArea;
+  /** Free-text location when area === 'custom' ("near the convention center"). */
+  customArea?: string;
+  /** Sort by price (cheapest first) instead of best match. */
+  sortByPrice?: boolean;
   /** Trip date → real check-in/check-out on the booking links. */
   checkinIso?: string;
   nights?: number;
@@ -225,38 +326,67 @@ export async function getHotelRecommendations(
   cityKey: CityKey,
   opts: HotelSearchOptions = {},
 ): Promise<ServiceResult<HotelOption[]>> {
-  await mockDelay(400);
+  await mockDelay(300);
 
-  const seeds = HOTELS[cityKey] ?? GENERIC_HOTELS.map((h) => ({
-    ...h,
-    searchQuery: opts.destinationQuery ?? h.searchQuery,
-  }));
+  const seeds =
+    resolveHotelGroup(cityKey, opts.destinationQuery) ??
+    GENERIC_HOTELS.map((h) => ({
+      ...h,
+      searchQuery: opts.destinationQuery ?? h.searchQuery,
+    }));
 
-  const fit = opts.purpose ? PURPOSE_FIT[opts.purpose] : undefined;
+  const purposeFit = opts.purpose ? PURPOSE_FIT[opts.purpose] : undefined;
+  const areaFit = opts.area && opts.area !== 'custom' ? AREA_FIT[opts.area] : undefined;
+  const customQuery = opts.area === 'custom' ? opts.customArea?.trim() : undefined;
 
   const scored = seeds.map((seed) => {
     let score = seed.rating; // base: quality
     let why: string | undefined;
 
-    if (fit) {
-      const matched = seed.tags.find((t) => fit.tags.includes(t));
+    // Stay-area preference dominates everything else.
+    if (areaFit) {
+      const matched = seed.tags.find((t) => areaFit.tags.includes(t));
       if (matched) {
-        score += 3; // purpose match dominates
-        why = fit.why[matched];
+        score += 5;
+        why = areaFit.why;
       }
-    } else if (opts.arrivingByAir && seed.nearAirport) {
+    } else if (customQuery) {
+      // Custom entry: fuzzy-match the request against the hotel's area text.
+      const q = customQuery.toLowerCase();
+      if (`${seed.area} ${seed.distanceLabel}`.toLowerCase().includes(q)) {
+        score += 5;
+        why = `Matches "${customQuery}".`;
+      }
+    }
+
+    if (purposeFit) {
+      const matched = seed.tags.find((t) => purposeFit.tags.includes(t));
+      if (matched) {
+        score += 3;
+        why = why ?? purposeFit.why[matched];
+      }
+    } else if (!areaFit && !customQuery && opts.arrivingByAir && seed.nearAirport) {
       score += 1.5;
       why = 'Close to the airport for your arrival.';
     }
 
+    // Custom entries also refine the Booking.com search itself.
+    const searchQuery = customQuery
+      ? `${customQuery} ${opts.destinationQuery ?? seed.searchQuery}`
+      : seed.searchQuery;
+
     const hotel: HotelOption = {
       ...seed,
-      bookingUrl: buildHotelSearchLink(seed.searchQuery, opts.checkinIso, opts.nights ?? 1),
+      bookingUrl: buildHotelSearchLink(searchQuery, opts.checkinIso, opts.nights ?? 1),
       whyRecommended: why,
     };
     return { hotel, score };
   });
 
-  scored.sort((a, b) => b.score - a.score);
+  if (opts.sortByPrice) {
+    scored.sort((a, b) => a.hotel.pricePerNightUsd - b.hotel.pricePerNightUsd);
+  } else {
+    scored.sort((a, b) => b.score - a.score);
+  }
   return { ok: true, data: scored.map((s) => s.hotel) };
 }

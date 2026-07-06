@@ -99,6 +99,26 @@ export async function getAccessOptions(
     });
   }
 
+  // Public-transportation alternative for stretches whose default is a ride
+  // (airport runs get a subway/bus/AirTrain-style chain too).
+  const transitVariant = await getLocalLegs(corridor, `${facet}-transit`);
+  if (transitVariant.ok) {
+    const tLegs = transitVariant.data.legs;
+    const perPersonCost = tLegs.reduce((a, l) => a + l.costUsd, 0);
+    const total = perPersonCost * search.travelers;
+    options.push({
+      id: nextId('acc-pt'),
+      title: 'Public transportation',
+      modes: Array.from(new Set(tLegs.map((l) => l.mode))),
+      legs: tLegs,
+      durationMinutes: tLegs.reduce((a, l) => a + l.durationMinutes, 0),
+      costUsd: total,
+      costLabel: total === 0 ? 'Free' : `$${total.toFixed(2).replace(/\.00$/, '')}`,
+      description: tLegs.map((l) => l.title).join(' → '),
+      badges: [],
+    });
+  }
+
   // Rideshare comparison for the same stretch.
   const stats = RIDE_STATS[`${corridor}:${facet}`];
   if (stats) {

@@ -19,7 +19,8 @@ import { WarningList } from '../components/WarningList';
 import { useTrip } from '../context/TripContext';
 import type { PlannerScreenProps } from '../navigation/types';
 import { explainAccessChoice, getAccessOptions, type AccessOption } from '../services/accessService';
-import { buildTicketPurchaseLink } from '../services/deepLinkService';
+import { buildFlightProviderLinks, buildTicketPurchaseLink } from '../services/deepLinkService';
+import { aiConfigured, generateConciergePlan } from '../services/aiService';
 import { openBookingLink } from '../components/BookingLinks';
 import { CORRIDOR_CITIES } from '../data/cities';
 import { findCityCoords } from '../data/airports';
@@ -39,8 +40,10 @@ import {
 } from '../services/tripService';
 import { colors, radii, shadows, spacing, typography } from '../theme';
 import {
+  HOTEL_AREA_LABELS,
   TIME_OF_DAY_LABELS,
   TRIP_PURPOSE_LABELS,
+  type HotelArea,
   type HotelOption,
   type Place,
   type RouteOption,
@@ -139,9 +142,17 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
   const [hotelTiming, setHotelTiming] = useState<'first' | 'later'>('first');
   const [directRoute, setDirectRoute] = useState<RouteOption>();
   const [purpose, setPurpose] = useState<TripPurpose>();
+  const [hotelArea, setHotelArea] = useState<HotelArea>();
+  const [customArea, setCustomArea] = useState('');
+  const [hotelPriceSort, setHotelPriceSort] = useState(false);
   const [hotels, setHotels] = useState<HotelOption[]>();
   const [hotel, setHotel] = useState<HotelOption>();
   const [hotelDecided, setHotelDecided] = useState(false);
+  const [customFinal, setCustomFinal] = useState<Place>();
+  const [showCustomFinal, setShowCustomFinal] = useState(false);
+  const [aiPlan, setAiPlan] = useState<string>();
+  const [aiSource, setAiSource] = useState<'claude' | 'local'>();
+  const [aiLoading, setAiLoading] = useState(false);
   const [firstOptions, setFirstOptions] = useState<AccessOption[]>();
   const [lastOptions, setLastOptions] = useState<AccessOption[]>();
   const [firstMile, setFirstMile] = useState<AccessOption>();
@@ -313,6 +324,9 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
         arrivingByAir: group === 'flights',
         destinationQuery: search.destination.address,
         purpose,
+        area: hotelArea,
+        customArea,
+        sortByPrice: hotelPriceSort,
         checkinIso: search.departureTime,
         nights: 1,
       });
@@ -321,7 +335,7 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     return () => {
       cancelled = true;
     };
-  }, [step, search, purpose, group]);
+  }, [step, search, purpose, group, hotelArea, customArea, hotelPriceSort, needHotel]);
 
   // --- Access options (prefetched in parallel from the ticket step on) ------
   useEffect(() => {
@@ -403,16 +417,26 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     });
   };
 
-  const chooseTicket = (t: TicketOption, intent: 'now' | 'end' | 'later') => {
+  const chooseTicket = (t: TicketOption, intent: 'now' | 'end' | 'later', openDefault = true) => {
     setTicket(t);
     setPurchaseIntent(intent);
     setPendingTicket(undefined);
     setFinalRoute(undefined);
-    if (intent === 'now') {
+    setAiPlan(undefined);
+    if (intent === 'now' && openDefault) {
+      // Automatically open the provider's site/app for purchase.
       const link = purchaseLinkFor(t);
       if (link) openBookingLink(link);
     }
     setTimeout(goNext, 100);
+  };
+
+  /** All flight sites for this ticket, pre-filled with the real route + date. */
+  const flightProviderLinksFor = (t: TicketOption) => {
+    const originCode = t.haul.fromStation.match(/\(([A-Z]{3})\)/)?.[1];
+    const destCode = t.haul.toStation.match(/\(([A-Z]{3})\)/)?.[1];
+    if (!originCode || !destCode) return [];
+    return buildFlightProviderLinks(originCode, destCode, t.departureTime, search?.travelers ?? 1);
   };
 
   // -------------------------------------------------------------------------
@@ -439,7 +463,7 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
           <View style={styles.forwardButton} />
         )}
       </View>
-      <Text style={styles.question}>{STEP_TITLES[step]}</Text>
+      <Text style={styles.question}>{questionFor(step)}</Text>
 
       <ScrollView
         style={styles.flex}
@@ -463,6 +487,25 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
   );
 
   // ---- step helpers ---------------------------------------------------------
+
+  /** The final destination: custom entry > hotel-as-first-stop > searched place. */
+  function finalTargetLabel(): string {
+    if (customFinal) return customFinal.label ?? customFinal.address.split(',')[0];
+    if (hotel && hotelTiming === 'first') return hotel.name;
+    return search?.destination.label ?? 'your destination';
+  }
+
+  /** Step headers name real places: the closest airport, the landing airport. */
+  function questionFor(s: StepId): string {
+    if (s === 'firstMile') {
+      return `Getting to ${ticket?.haul.fromStation ?? 'your departure point'}`;
+    }
+    if (s === 'lastMile') {
+      const landing = ticket?.haul.toStation ?? 'arrival';
+      return `${landing} → ${finalTargetLabel()}`;
+    }
+    return STEP_TITLES[s];
+  }
 
   function stepHasAnswer(s: StepId): boolean {
     switch (s) {
@@ -819,12 +862,32 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
                 {/* Purchase choices appear when the ticket is tapped */}
                 {isPending && (
                   <View style={styles.purchasePanel}>
-                    <AppButton
-                      label={purchaseLinkFor(t)?.label ?? 'Purchase now'}
-                      icon="cart"
-                      small
-                      onPress={() => chooseTicket(t, 'now')}
-                    />
+                    {t.haul.mode === 'flight' ? (
+                      <>
+                        <Text style={styles.purchaseHint}>Purchase now on:</Text>
+                        <View style={styles.providerGrid}>
+                          {flightProviderLinksFor(t).map((link) => (
+                            <Pressable
+                              key={link.id}
+                              onPress={() => {
+                                openBookingLink(link);
+                                chooseTicket(t, 'now', false);
+                              }}
+                              style={({ pressed }) => [styles.providerButton, pressed && styles.pressed]}
+                            >
+                              <Text style={styles.providerButtonText}>{link.label}</Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                      </>
+                    ) : (
+                      <AppButton
+                        label={purchaseLinkFor(t)?.label ?? 'Purchase now'}
+                        icon="cart"
+                        small
+                        onPress={() => chooseTicket(t, 'now')}
+                      />
+                    )}
                     <View style={styles.purchaseRow}>
                       <AppButton
                         label="Buy at the end"
@@ -898,9 +961,56 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
   }
 
   function renderHotelStep() {
-    if (!hotels) return <LoadingState message="Finding stays near your destination…" />;
+    const areaSelector = (
+      <>
+        <Text style={styles.subLabel}>WHERE DO YOU WANT TO BE?</Text>
+        <View style={styles.quickRow}>
+          {(Object.keys(HOTEL_AREA_LABELS) as HotelArea[]).map((a) => (
+            <Chip
+              key={a}
+              label={HOTEL_AREA_LABELS[a]}
+              selected={hotelArea === a}
+              onPress={() => {
+                setHotelArea((prev) => (prev === a ? undefined : a));
+                setHotels(undefined);
+              }}
+            />
+          ))}
+          <Chip
+            label="Sort by price instead"
+            icon="pricetag"
+            selected={hotelPriceSort}
+            onPress={() => {
+              setHotelPriceSort((v) => !v);
+              setHotels(undefined);
+            }}
+          />
+        </View>
+        {hotelArea === 'custom' && (
+          <PlaceInput
+            placeholder='Where exactly? e.g. "near the convention center"'
+            value={customArea || undefined}
+            onSelect={(p) => {
+              setCustomArea(p.label);
+              setHotels(undefined);
+            }}
+          />
+        )}
+      </>
+    );
+
+    if (!hotels) {
+      return (
+        <View style={styles.stepBody}>
+          {areaSelector}
+          <LoadingState message="Finding stays that match…" />
+        </View>
+      );
+    }
     return (
       <View style={styles.stepBody}>
+        {areaSelector}
+
         <Text style={styles.subLabel}>WHAT'S THE OCCASION?</Text>
         <View style={styles.quickRow}>
           {(Object.keys(TRIP_PURPOSE_LABELS) as TripPurpose[]).map((p) => (
@@ -969,20 +1079,48 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     const selected = which === 'first' ? firstMile : lastMile;
     const setSelected = which === 'first' ? setFirstMile : setLastMile;
     const wx = which === 'first' ? results?.originWeather : results?.destinationWeather;
-    const target =
-      which === 'first'
-        ? ticket?.haul.fromStation ?? 'your departure point'
-        : hotel && hotelTiming === 'first'
-          ? hotel.name // hotel is the first stop → the last mile ends there
-          : search?.destination.label ?? 'your destination';
+    const target = which === 'first' ? ticket?.haul.fromStation ?? 'your departure point' : finalTargetLabel();
 
     if (!options) return <LoadingState message="Pricing every way to connect…" />;
     return (
       <View style={styles.stepBody}>
         <Text style={styles.stepHint}>
-          {which === 'first' ? `To ${target}` : `From arrival to ${target}`} —{' '}
+          {which === 'first' ? `To ${target}` : `From ${ticket?.haul.toStation ?? 'arrival'} to ${target}`} —{' '}
           {explainAccessChoice(options, wx, search?.bags ?? 0)}
         </Text>
+
+        {/* Custom final destination — someone's house, an office, anywhere */}
+        {which === 'last' && (
+          <View>
+            <Pressable
+              onPress={() => setShowCustomFinal((v) => !v)}
+              style={({ pressed }) => [styles.customFinalToggle, pressed && styles.pressed]}
+            >
+              <Ionicons
+                name={customFinal ? 'location' : 'add-circle-outline'}
+                size={16}
+                color={colors.primary}
+              />
+              <Text style={styles.customFinalText}>
+                {customFinal
+                  ? `Final destination: ${finalTargetLabel()} (tap to change)`
+                  : 'Add a custom final destination'}
+              </Text>
+            </Pressable>
+            {showCustomFinal && (
+              <PlaceInput
+                placeholder="Exact address, someone's house, an office…"
+                value={customFinal?.label}
+                autoFocus
+                onSelect={(p) => {
+                  setCustomFinal({ address: p.address, label: p.label });
+                  setShowCustomFinal(false);
+                  setFinalRoute(undefined);
+                }}
+              />
+            )}
+          </View>
+        )}
         {options.map((o) => (
           <Pressable
             key={o.id}
@@ -1067,6 +1205,51 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
             />
           </Card>
         )}
+
+        {/* AI Concierge — a curated, human plan for these exact points */}
+        <Card style={styles.aiCard}>
+          <View style={styles.aiHeader}>
+            <Ionicons name="sparkles" size={18} color={colors.primary} />
+            <Text style={styles.aiTitle}>A2Z Concierge</Text>
+            {aiSource === 'claude' && <Text style={styles.aiBadge}>Powered by Claude</Text>}
+          </View>
+          {aiPlan ? (
+            <Text style={styles.aiText}>{aiPlan}</Text>
+          ) : (
+            <>
+              <Text style={styles.aiHint}>
+                Get a curated briefing for this exact trip — what your day looks like, the moments
+                that matter, and what to do if something slips.
+                {!aiConfigured() && ' (Add EXPO_PUBLIC_ANTHROPIC_API_KEY for live Claude curation.)'}
+              </Text>
+              <AppButton
+                label="Curate my travel plan"
+                icon="sparkles"
+                variant="secondary"
+                small
+                loading={aiLoading}
+                onPress={async () => {
+                  if (!search || !finalRoute) return;
+                  setAiLoading(true);
+                  const result = await generateConciergePlan({
+                    search: customFinal
+                      ? { ...search, destination: customFinal }
+                      : search,
+                    route: finalRoute,
+                    hotel,
+                    originWeather: results?.originWeather,
+                    destinationWeather: results?.destinationWeather,
+                  });
+                  setAiLoading(false);
+                  if (result.ok) {
+                    setAiPlan(result.data.text);
+                    setAiSource(result.data.source);
+                  }
+                }}
+              />
+            </>
+          )}
+        </Card>
 
         <WarningList warnings={finalRoute.warnings} />
         <MapPreview route={finalRoute} />
@@ -1271,6 +1454,31 @@ const styles = StyleSheet.create({
     paddingTop: spacing.md,
   },
   purchaseRow: { flexDirection: 'row', gap: spacing.sm },
+  purchaseHint: { ...typography.micro, color: colors.textMuted },
+  providerGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  providerButton: {
+    backgroundColor: colors.primarySoft,
+    borderRadius: radii.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    minHeight: 36,
+    justifyContent: 'center',
+  },
+  providerButtonText: { fontSize: 13, fontWeight: '700', color: colors.primary },
+  customFinalToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.xs,
+  },
+  customFinalText: { fontSize: 13, fontWeight: '700', color: colors.primary, flex: 1 },
+  aiCard: { gap: spacing.sm, borderColor: colors.primary, borderWidth: 1.5 },
+  aiHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  aiTitle: { ...typography.heading, color: colors.ink, flex: 1 },
+  aiBadge: { fontSize: 11, fontWeight: '700', color: colors.primary },
+  aiHint: { fontSize: 13, color: colors.textSecondary, lineHeight: 19 },
+  aiText: { fontSize: 14, color: colors.text, lineHeight: 21 },
   buyNowCard: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, backgroundColor: colors.warningSoft, borderColor: colors.warning },
   buyNowTitle: { fontSize: 14, fontWeight: '800', color: colors.ink },
   buyNowText: { fontSize: 12, color: colors.textSecondary, marginTop: 2, lineHeight: 17 },

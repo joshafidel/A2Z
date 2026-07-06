@@ -321,7 +321,26 @@ export const TRIP_PURPOSE_LABELS: Record<TripPurpose, string> = {
   layover: 'Quick layover',
 };
 
-export type HotelTag = 'business' | 'convention' | 'attractions' | 'family' | 'airport' | 'transit';
+export type HotelTag =
+  | 'business'
+  | 'convention'
+  | 'attractions'
+  | 'family'
+  | 'airport'
+  | 'transit'
+  | 'beach'
+  | 'downtown';
+
+/** Where the traveler wants to stay — the first hotel question. */
+export type HotelArea = 'airport' | 'beach' | 'attraction' | 'downtown' | 'custom';
+
+export const HOTEL_AREA_LABELS: Record<HotelArea, string> = {
+  airport: 'Close to the airport',
+  beach: 'Close to the beach',
+  attraction: 'Close to the main attraction',
+  downtown: 'Close to downtown',
+  custom: 'Somewhere specific…',
+};
 
 export interface HotelOption {
   id: string;

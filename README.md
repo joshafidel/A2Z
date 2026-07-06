@@ -116,6 +116,7 @@ A2Z/
 | Train/bus fares | No public fare APIs exist (and scraping Amtrak/FlixBus violates their terms) | Calibrated estimates, clearly labeled |
 | Booking | Real provider sites opened with your route + date pre-filled: Google Flights, Wanderu (live Amtrak/bus fares), Kayak (rentals), Booking.com (hotels with check-in/out) | **Live** |
 | Trip reminders | Browser Notification API (expo-notifications hook point for native) | Works while the site is open |
+| AI Concierge | **Anthropic Claude** (`claude-opus-4-8`) via `EXPO_PUBLIC_ANTHROPIC_API_KEY`; deterministic local curation without a key | Live once you add a key |
 
 Every live call fails fast into the mock layer, so the app always works — offline, in CI, or if a free API has an outage. Set `EXPO_PUBLIC_LIVE_DATA=off` to force deterministic mock mode.
 

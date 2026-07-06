@@ -192,6 +192,78 @@ export function buildExpediaFlightLink(
 }
 
 /**
+ * Every major flight-booking site, pre-filled with the real route/date
+ * where the site supports URL parameters (Expedia, Kayak, Google Flights,
+ * Skyscanner, Southwest all do; Delta and American open their search page).
+ * All official public URL formats — no scraping.
+ */
+export function buildFlightProviderLinks(
+  originCode: string,
+  destCode: string,
+  departureIso: string,
+  travelers = 1,
+): BookingLink[] {
+  const d = new Date(departureIso);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const isoDay = `${yyyy}-${mm}-${dd}`;
+  const skyscannerDay = `${String(yyyy).slice(2)}${mm}${dd}`;
+
+  return [
+    buildExpediaFlightLink(originCode, destCode, departureIso, travelers),
+    {
+      id: id('kayakf'),
+      label: 'Kayak',
+      provider: 'Kayak',
+      kind: 'flight',
+      icon: 'airplane',
+      webUrl: `https://www.kayak.com/flights/${originCode}-${destCode}/${isoDay}?sort=bestflight_a`,
+    },
+    {
+      id: id('gflights2'),
+      label: 'Google Flights',
+      provider: 'Google Flights',
+      kind: 'flight',
+      icon: 'airplane',
+      webUrl: `https://www.google.com/travel/flights?q=${enc(`Flights from ${originCode} to ${destCode} on ${isoDay}`)}`,
+    },
+    {
+      id: id('skyscanner'),
+      label: 'Skyscanner',
+      provider: 'Skyscanner',
+      kind: 'flight',
+      icon: 'airplane',
+      webUrl: `https://www.skyscanner.com/transport/flights/${originCode.toLowerCase()}/${destCode.toLowerCase()}/${skyscannerDay}/`,
+    },
+    {
+      id: id('southwest'),
+      label: 'Southwest',
+      provider: 'Southwest',
+      kind: 'flight',
+      icon: 'airplane',
+      webUrl: `https://www.southwest.com/air/booking/select.html?originationAirportCode=${originCode}&destinationAirportCode=${destCode}&departureDate=${isoDay}&adultPassengersCount=${travelers}&tripType=oneway`,
+    },
+    {
+      id: id('delta'),
+      label: 'Delta',
+      provider: 'Delta',
+      kind: 'flight',
+      icon: 'airplane',
+      webUrl: 'https://www.delta.com/flight-search/book-a-flight',
+    },
+    {
+      id: id('aa'),
+      label: 'American Airlines',
+      provider: 'American Airlines',
+      kind: 'flight',
+      icon: 'airplane',
+      webUrl: 'https://www.aa.com/booking/find-flights',
+    },
+  ];
+}
+
+/**
  * The right "purchase this ticket" handoff per mode: Expedia for flights,
  * Wanderu→Amtrak for trains (live Amtrak fares for the exact date),
  * FlixBus for buses.
