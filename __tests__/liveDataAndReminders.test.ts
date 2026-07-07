@@ -35,13 +35,13 @@ describe('real booking handoff links', () => {
     expect(decodeURIComponent(link.webUrl)).toContain('LGA to BOS on 2026-07-11');
   });
 
-  it('builds a dated Wanderu train search with city slugs', () => {
+  it('sends train bookings straight to amtrak.com', () => {
     const link = buildTrainBookingLink('Amtrak', 'https://www.amtrak.com', {
       originCity: 'New York, NY',
       destCity: 'Boston, MA',
       departureIso: '2026-07-11T12:00:00.000Z',
     });
-    expect(link.webUrl).toBe('https://www.wanderu.com/en-us/depart/new-york-ny/boston-ma/2026-07-11');
+    expect(link.webUrl).toBe('https://www.amtrak.com/tickets/departure.html');
   });
 
   it('falls back to the provider page without route details', () => {
@@ -81,7 +81,7 @@ describe('real booking handoff links', () => {
       departureIso: '2026-07-11T12:00:00.000Z',
     });
     expect(train.label).toBe('Purchase Amtrak ticket');
-    expect(train.webUrl).toContain('wanderu.com'); // live Amtrak fares → Amtrak checkout
+    expect(train.webUrl).toContain('amtrak.com'); // Amtrak tickets are bought on amtrak.com
   });
 });
 

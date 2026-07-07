@@ -14,6 +14,7 @@
  * below stay identical.
  */
 
+import { findCityCoords, nearestCity } from '../data/airports';
 import type { ServiceResult } from '../types';
 import { fetchWithTimeout, liveDataEnabled } from './config';
 
@@ -131,6 +132,37 @@ export async function drivingRoute(
       code: 'UNAVAILABLE',
     };
   }
+}
+
+export interface ResolvedCity {
+  lat: number;
+  lng: number;
+  /** Human city name ("Tucson"). */
+  city: string;
+  /** Whether useful Amtrak service exists near this point. */
+  amtrak: boolean;
+}
+
+/**
+ * Figure out where ANY address is: known-city keyword match first (instant,
+ * offline), then live geocoding for unfamiliar addresses. The nearest known
+ * city supplies the rail-service flag so trains/flights can be inferred for
+ * places the app has never heard of.
+ */
+export async function resolveCityCoords(address: string): Promise<ResolvedCity | undefined> {
+  const local = findCityCoords(address);
+  if (local) return { lat: local.lat, lng: local.lng, city: local.city, amtrak: local.amtrak };
+
+  const geo = await geocode(address);
+  if (!geo.ok) return undefined;
+  const near = nearestCity({ lat: geo.data.lat, lng: geo.data.lng });
+  return {
+    lat: geo.data.lat,
+    lng: geo.data.lng,
+    // Within ~40 mi of a known city → use its name; otherwise the geocoder's.
+    city: near.miles <= 40 ? near.entry.city : geo.data.displayName.split(',')[0],
+    amtrak: near.miles <= 60 ? near.entry.amtrak : false,
+  };
 }
 
 type AddressRouteResult = ServiceResult<RoadRoute & { from: GeoPoint; to: GeoPoint }>;

@@ -10,7 +10,8 @@
  * Map results into LineHaulOption here; nothing else changes.
  */
 
-import { findCityCoords, haversineMiles } from '../data/airports';
+import { haversineMiles } from '../data/airports';
+import { resolveCityCoords } from './geoService';
 import type { CorridorKey } from '../data/cities';
 import type { ServiceResult } from '../types';
 import { isLive, mockDelay } from './config';
@@ -22,9 +23,12 @@ import type { LineHaulOption } from './legTypes';
  * routes get honest long durations, so trains populate when they're an
  * option and rank realistically.
  */
-export function generateTrains(originAddress: string, destAddress: string): LineHaulOption[] {
-  const from = findCityCoords(originAddress);
-  const to = findCityCoords(destAddress);
+export async function generateTrains(
+  originAddress: string,
+  destAddress: string,
+): Promise<LineHaulOption[]> {
+  const from = await resolveCityCoords(originAddress);
+  const to = await resolveCityCoords(destAddress);
   if (!from || !to || !from.amtrak || !to.amtrak) return [];
 
   const miles = haversineMiles(from, to);
@@ -139,7 +143,7 @@ export async function searchTrains(
   const curated = TRAINS[corridor];
   if (curated) return { ok: true, data: curated };
   if (opts.originAddress && opts.destAddress) {
-    return { ok: true, data: generateTrains(opts.originAddress, opts.destAddress) };
+    return { ok: true, data: await generateTrains(opts.originAddress, opts.destAddress) };
   }
   return { ok: true, data: [] };
 }

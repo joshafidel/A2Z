@@ -45,7 +45,27 @@ export const AIRPORTS: Airport[] = [
   { code: 'SAN', name: 'San Diego International', city: 'San Diego', lat: 32.7338, lng: -117.1933, busy: false },
   { code: 'PDX', name: 'Portland International', city: 'Portland', lat: 45.5898, lng: -122.5951, busy: false },
   { code: 'SLC', name: 'Salt Lake City International', city: 'Salt Lake City', lat: 40.7899, lng: -111.9791, busy: false },
-  { code: 'NOLA', name: 'Louis Armstrong New Orleans', city: 'New Orleans', lat: 29.9934, lng: -90.258, busy: false },
+  { code: 'MSY', name: 'Louis Armstrong New Orleans', city: 'New Orleans', lat: 29.9934, lng: -90.258, busy: false },
+  { code: 'TPA', name: 'Tampa International', city: 'Tampa', lat: 27.9755, lng: -82.5332, busy: false },
+  { code: 'JAX', name: 'Jacksonville International', city: 'Jacksonville', lat: 30.4941, lng: -81.6879, busy: false },
+  { code: 'RSW', name: 'Southwest Florida', city: 'Fort Myers', lat: 26.5362, lng: -81.7552, busy: false },
+  { code: 'SAT', name: 'San Antonio International', city: 'San Antonio', lat: 29.5337, lng: -98.4698, busy: false },
+  { code: 'STL', name: 'St. Louis Lambert', city: 'St. Louis', lat: 38.7487, lng: -90.37, busy: false },
+  { code: 'MCI', name: 'Kansas City International', city: 'Kansas City', lat: 39.2976, lng: -94.7139, busy: false },
+  { code: 'RDU', name: 'Raleigh–Durham', city: 'Raleigh', lat: 35.8801, lng: -78.788, busy: false },
+  { code: 'PIT', name: 'Pittsburgh International', city: 'Pittsburgh', lat: 40.4915, lng: -80.2329, busy: false },
+  { code: 'CLE', name: 'Cleveland Hopkins', city: 'Cleveland', lat: 41.4058, lng: -81.8539, busy: false },
+  { code: 'CMH', name: 'John Glenn Columbus', city: 'Columbus', lat: 39.998, lng: -82.8919, busy: false },
+  { code: 'IND', name: 'Indianapolis International', city: 'Indianapolis', lat: 39.7169, lng: -86.2956, busy: false },
+  { code: 'MKE', name: 'Milwaukee Mitchell', city: 'Milwaukee', lat: 42.9472, lng: -87.8966, busy: false },
+  { code: 'MEM', name: 'Memphis International', city: 'Memphis', lat: 35.0424, lng: -89.9767, busy: false },
+  { code: 'OKC', name: 'Will Rogers Oklahoma City', city: 'Oklahoma City', lat: 35.3931, lng: -97.6007, busy: false },
+  { code: 'ABQ', name: 'Albuquerque Sunport', city: 'Albuquerque', lat: 35.0402, lng: -106.6091, busy: false },
+  { code: 'ELP', name: 'El Paso International', city: 'El Paso', lat: 31.8072, lng: -106.3776, busy: false },
+  { code: 'TUS', name: 'Tucson International', city: 'Tucson', lat: 32.1161, lng: -110.9411, busy: false },
+  { code: 'SMF', name: 'Sacramento International', city: 'Sacramento', lat: 38.6954, lng: -121.5908, busy: false },
+  { code: 'SJC', name: 'San Jose Mineta', city: 'San Jose', lat: 37.3639, lng: -121.9289, busy: false },
+  { code: 'BWI', name: 'Baltimore/Washington International', city: 'Baltimore', lat: 39.1774, lng: -76.6684, busy: true },
 ];
 
 interface CityEntry {
@@ -86,6 +106,26 @@ export const CITY_COORDS: CityEntry[] = [
   { city: 'Portland', lat: 45.5152, lng: -122.6784, aliases: ['portland'], amtrak: true },
   { city: 'Salt Lake City', lat: 40.7608, lng: -111.891, aliases: ['salt lake'], amtrak: true },
   { city: 'New Orleans', lat: 29.9511, lng: -90.0715, aliases: ['new orleans', 'nola'], amtrak: true },
+  { city: 'Tampa', lat: 27.9506, lng: -82.4572, aliases: ['tampa'], amtrak: true },
+  { city: 'Jacksonville', lat: 30.3322, lng: -81.6557, aliases: ['jacksonville'], amtrak: true },
+  { city: 'Fort Myers', lat: 26.6406, lng: -81.8723, aliases: ['fort myers', 'ft myers'], amtrak: false },
+  { city: 'San Antonio', lat: 29.4241, lng: -98.4936, aliases: ['san antonio'], amtrak: true },
+  { city: 'St. Louis', lat: 38.627, lng: -90.1994, aliases: ['st louis', 'st. louis', 'saint louis'], amtrak: true },
+  { city: 'Kansas City', lat: 39.0997, lng: -94.5786, aliases: ['kansas city'], amtrak: true },
+  { city: 'Raleigh', lat: 35.7796, lng: -78.6382, aliases: ['raleigh', 'durham'], amtrak: true },
+  { city: 'Pittsburgh', lat: 40.4406, lng: -79.9959, aliases: ['pittsburgh'], amtrak: true },
+  { city: 'Cleveland', lat: 41.4993, lng: -81.6944, aliases: ['cleveland'], amtrak: true },
+  { city: 'Columbus', lat: 39.9612, lng: -82.9988, aliases: ['columbus, oh', 'columbus ohio'], amtrak: false },
+  { city: 'Indianapolis', lat: 39.7684, lng: -86.1581, aliases: ['indianapolis', 'indy'], amtrak: true },
+  { city: 'Milwaukee', lat: 43.0389, lng: -87.9065, aliases: ['milwaukee'], amtrak: true },
+  { city: 'Memphis', lat: 35.1495, lng: -90.049, aliases: ['memphis'], amtrak: true },
+  { city: 'Oklahoma City', lat: 35.4676, lng: -97.5164, aliases: ['oklahoma city', 'okc'], amtrak: true },
+  { city: 'Albuquerque', lat: 35.0844, lng: -106.6504, aliases: ['albuquerque'], amtrak: true },
+  { city: 'El Paso', lat: 31.7619, lng: -106.485, aliases: ['el paso'], amtrak: true },
+  { city: 'Tucson', lat: 32.2226, lng: -110.9747, aliases: ['tucson'], amtrak: true },
+  { city: 'Sacramento', lat: 38.5816, lng: -121.4944, aliases: ['sacramento'], amtrak: true },
+  { city: 'San Jose', lat: 37.3382, lng: -121.8863, aliases: ['san jose'], amtrak: true },
+  { city: 'Orlando (Kissimmee)', lat: 28.2919, lng: -81.4076, aliases: ['kissimmee'], amtrak: true },
 ];
 
 export function haversineMiles(
@@ -122,3 +162,19 @@ export function nearestAirport(coords: { lat: number; lng: number }): Airport {
     haversineMiles(coords, a) < haversineMiles(coords, best) ? a : best,
   );
 }
+
+/** Nearest known city to a coordinate, with its distance. */
+export function nearestCity(coords: { lat: number; lng: number }): { entry: CityEntry; miles: number } {
+  let best = CITY_COORDS[0];
+  let bestMiles = haversineMiles(coords, best);
+  for (const entry of CITY_COORDS) {
+    const d = haversineMiles(coords, entry);
+    if (d < bestMiles) {
+      best = entry;
+      bestMiles = d;
+    }
+  }
+  return { entry: best, miles: bestMiles };
+}
+
+export type { CityEntry };

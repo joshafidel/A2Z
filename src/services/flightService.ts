@@ -10,7 +10,8 @@
  * offers into LineHaulOption. Keep bag fees from the ancillaries response.
  */
 
-import { findCityCoords, haversineMiles, nearestAirport } from '../data/airports';
+import { haversineMiles, nearestAirport } from '../data/airports';
+import { resolveCityCoords } from './geoService';
 import type { CorridorKey } from '../data/cities';
 import type { ServiceResult } from '../types';
 import { apiConfig, fetchWithTimeout, mockDelay } from './config';
@@ -21,10 +22,15 @@ import type { LineHaulOption } from './legTypes';
  * nearest major airports + haversine distance drive duration and fares.
  * This guarantees flights always populate, Miami included.
  */
-export function generateFlights(originAddress: string, destAddress: string): LineHaulOption[] {
-  const from = findCityCoords(originAddress) ?? { city: 'New York', lat: 40.7128, lng: -74.006 };
-  const to = findCityCoords(destAddress);
-  if (!to) return []; // unknown destination city — flights can't be estimated
+export async function generateFlights(
+  originAddress: string,
+  destAddress: string,
+): Promise<LineHaulOption[]> {
+  // Unfamiliar addresses are geocoded live, then snapped to real geography —
+  // so "figure out where the address is and infer the best ways to get there".
+  const from = (await resolveCityCoords(originAddress)) ?? { city: 'New York', lat: 40.7128, lng: -74.006 };
+  const to = await resolveCityCoords(destAddress);
+  if (!to) return []; // truly unresolvable destination
 
   const origin = nearestAirport(from);
   const dest = nearestAirport(to);
@@ -219,7 +225,7 @@ export async function searchFlights(
     // No curated corridor — generate flights from real geography so they
     // always populate (nearest airports + great-circle distance).
     if (opts.originAddress && opts.destAddress) {
-      return { ok: true, data: generateFlights(opts.originAddress, opts.destAddress) };
+      return { ok: true, data: await generateFlights(opts.originAddress, opts.destAddress) };
     }
     return { ok: true, data: [] };
   }

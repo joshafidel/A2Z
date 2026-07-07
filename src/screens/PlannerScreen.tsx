@@ -18,8 +18,17 @@ import { TimelineView } from '../components/TimelineView';
 import { WarningList } from '../components/WarningList';
 import { useTrip } from '../context/TripContext';
 import type { PlannerScreenProps } from '../navigation/types';
-import { explainAccessChoice, getAccessOptions, type AccessOption } from '../services/accessService';
-import { buildFlightProviderLinks, buildTicketPurchaseLink } from '../services/deepLinkService';
+import {
+  accessEndpoints,
+  explainAccessChoice,
+  getAccessOptions,
+  type AccessOption,
+} from '../services/accessService';
+import {
+  buildFlightProviderLinks,
+  buildGoogleMapsLink,
+  buildTicketPurchaseLink,
+} from '../services/deepLinkService';
 import { aiConfigured, generateConciergePlan } from '../services/aiService';
 import { openBookingLink } from '../components/BookingLinks';
 import { CORRIDOR_CITIES } from '../data/cities';
@@ -352,10 +361,10 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
       const [first, last] = await Promise.all([
         firstOptions
           ? undefined
-          : getAccessOptions(results.corridor, accessFacet, search, results.originWeather),
+          : getAccessOptions(results.corridor, accessFacet, search, results.originWeather, ticket?.haul.fromStation),
         lastOptions
           ? undefined
-          : getAccessOptions(results.corridor, egressFacet, search, results.destinationWeather),
+          : getAccessOptions(results.corridor, egressFacet, search, results.destinationWeather, ticket?.haul.toStation),
       ]);
       if (cancelled) return;
       if (first) {
@@ -436,7 +445,13 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     const originCode = t.haul.fromStation.match(/\(([A-Z]{3})\)/)?.[1];
     const destCode = t.haul.toStation.match(/\(([A-Z]{3})\)/)?.[1];
     if (!originCode || !destCode) return [];
-    return buildFlightProviderLinks(originCode, destCode, t.departureTime, search?.travelers ?? 1);
+    return buildFlightProviderLinks(
+      originCode,
+      destCode,
+      t.departureTime,
+      search?.travelers ?? 1,
+      t.haul.serviceName,
+    );
   };
 
   // -------------------------------------------------------------------------
@@ -1081,6 +1096,32 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     const wx = which === 'first' ? results?.originWeather : results?.destinationWeather;
     const target = which === 'first' ? ticket?.haul.fromStation ?? 'your departure point' : finalTargetLabel();
 
+    // Live Google Maps directions for this exact stretch — real subway/bus
+    // lines, real times, straight from Maps.
+    const facetsByMode: Record<string, [string, string]> = {
+      flight: ['to-airport', 'from-airport'],
+      train: ['to-train', 'from-train'],
+      bus: ['to-bus', 'from-bus'],
+    };
+    const station = which === 'first' ? ticket?.haul.fromStation : ticket?.haul.toStation;
+    const endpoints =
+      results && search && chosenGroupDef?.lineHaulMode
+        ? accessEndpoints(
+            results.corridor,
+            facetsByMode[chosenGroupDef.lineHaulMode][which === 'first' ? 0 : 1],
+            search,
+            station,
+          )
+        : undefined;
+    const mapsTo =
+      which === 'last'
+        ? customFinal?.address ??
+          (hotel && hotelTiming === 'first'
+            ? `${hotel.name}, ${search?.destination.address ?? ''}`
+            : endpoints?.to)
+        : endpoints?.to;
+    const mapsLink = endpoints && mapsTo ? buildGoogleMapsLink(endpoints.from, mapsTo, 'transit') : undefined;
+
     if (!options) return <LoadingState message="Pricing every way to connect…" />;
     return (
       <View style={styles.stepBody}>
@@ -1157,6 +1198,18 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
             </View>
           </Pressable>
         ))}
+
+        {mapsLink && (
+          <Pressable
+            onPress={() => Linking.openURL(mapsLink.webUrl)}
+            style={({ pressed }) => [styles.customFinalToggle, pressed && styles.pressed]}
+          >
+            <Ionicons name="map" size={16} color={colors.primary} />
+            <Text style={styles.customFinalText}>
+              Live directions in Google Maps — exact subway, bus & times
+            </Text>
+          </Pressable>
+        )}
       </View>
     );
   }

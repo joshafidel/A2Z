@@ -129,20 +129,15 @@ export function buildTrainBookingLink(
   bookingUrl: string,
   opts: { originCity?: string; destCity?: string; departureIso?: string } = {},
 ): BookingLink {
-  const day = isoDay(opts.departureIso);
-  // Wanderu shows live Amtrak fares for the exact route/date, then links
-  // through to Amtrak to complete the booking.
-  const webUrl =
-    opts.originCity && opts.destCity && day
-      ? `https://www.wanderu.com/en-us/depart/${wanderuSlug(opts.originCity)}/${wanderuSlug(opts.destCity)}/${day}`
-      : bookingUrl;
+  // Amtrak tickets are bought on amtrak.com — link straight to their
+  // booking page (Amtrak's site doesn't accept route/date URL params).
   return {
     id: id('train'),
-    label: day ? `Live ${provider} fares for your date` : `Book on ${provider}`,
+    label: `Book on ${provider} (amtrak.com)`,
     provider,
     kind: 'train',
     icon: 'train',
-    webUrl,
+    webUrl: 'https://www.amtrak.com/tickets/departure.html',
   };
 }
 
@@ -202,6 +197,7 @@ export function buildFlightProviderLinks(
   destCode: string,
   departureIso: string,
   travelers = 1,
+  flightNumber?: string, // "DL 1232" — Google Flights resolves exact flights
 ): BookingLink[] {
   const d = new Date(departureIso);
   const yyyy = d.getFullYear();
@@ -226,7 +222,11 @@ export function buildFlightProviderLinks(
       provider: 'Google Flights',
       kind: 'flight',
       icon: 'airplane',
-      webUrl: `https://www.google.com/travel/flights?q=${enc(`Flights from ${originCode} to ${destCode} on ${isoDay}`)}`,
+      webUrl: `https://www.google.com/travel/flights?q=${enc(
+        flightNumber
+          ? `${flightNumber} on ${isoDay}` // exact flight the user selected
+          : `Flights from ${originCode} to ${destCode} on ${isoDay}`,
+      )}`,
     },
     {
       id: id('skyscanner'),

@@ -15,9 +15,14 @@
 
 import type { CorridorKey } from '../data/cities';
 import type { ServiceResult, TransportMode, TripSearch, WeatherCondition } from '../types';
-import { getLocalLegs } from './mapsService';
+import { getLiveTransitLegs, getLocalLegs } from './mapsService';
 import type { LocalLeg } from './mapsService';
 import { estimateRide } from './rideshareService';
+
+export interface AccessEndpoints {
+  from: string;
+  to: string;
+}
 
 export interface AccessOption {
   id: string;
@@ -65,17 +70,41 @@ function nextId(prefix: string): string {
  * Build all access options for one stretch (first or last mile).
  * Always returns at least the transit/walk default when data exists.
  */
+/** Real-world endpoints for a facet — used for live Google routing links. */
+export function accessEndpoints(
+  corridor: CorridorKey,
+  facet: string,
+  search: TripSearch,
+  stationName?: string,
+): AccessEndpoints {
+  const stats = RIDE_STATS[`${corridor}:${facet}`];
+  if (facet.startsWith('to-')) {
+    return { from: search.origin.address, to: stationName ?? stats?.to ?? search.destination.address };
+  }
+  return { from: stationName ?? stats?.from ?? search.origin.address, to: search.destination.address };
+}
+
 export async function getAccessOptions(
   corridor: CorridorKey,
   facet: string,
   search: TripSearch,
   weather?: WeatherCondition,
+  stationName?: string,
 ): Promise<ServiceResult<AccessOption[]>> {
   const base = await getLocalLegs(corridor, facet);
   if (!base.ok) return base;
 
   const options: AccessOption[] = [];
-  const legs = base.data.legs;
+  let legs = base.data.legs;
+
+  // REAL routing: when a Google Maps key is configured, the walk/transit
+  // chain comes from Google Directions — actual subway/bus lines, real
+  // travel times, and the published fare.
+  const endpoints = accessEndpoints(corridor, facet, search, stationName);
+  const live = await getLiveTransitLegs(endpoints.from, endpoints.to);
+  if (live && legs.length > 0 && legs[0].mode !== 'drive') {
+    legs = live;
+  }
   const walkMinutes = legs.filter((l) => l.mode === 'walk').reduce((a, l) => a + l.durationMinutes, 0);
   const transitCostPerPerson = legs.reduce((a, l) => a + l.costUsd, 0);
   const transitCost =
@@ -100,10 +129,11 @@ export async function getAccessOptions(
   }
 
   // Public-transportation alternative for stretches whose default is a ride
-  // (airport runs get a subway/bus/AirTrain-style chain too).
+  // (airport runs get a subway/bus chain too — live Google routing when
+  // a key is configured, curated lines otherwise).
   const transitVariant = await getLocalLegs(corridor, `${facet}-transit`);
   if (transitVariant.ok) {
-    const tLegs = transitVariant.data.legs;
+    const tLegs = (isDefaultRide ? live : undefined) ?? transitVariant.data.legs;
     const perPersonCost = tLegs.reduce((a, l) => a + l.costUsd, 0);
     const total = perPersonCost * search.travelers;
     options.push({

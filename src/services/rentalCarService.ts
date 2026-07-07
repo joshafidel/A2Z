@@ -147,27 +147,32 @@ const RENTALS: Partial<Record<CorridorKey, CityRentalData>> = {
   generic: {
     cityLabel: 'your city',
     offers: [
-      {
-        company: 'Enterprise',
-        officeName: 'Enterprise (nearest branch)',
-        officeAddress: 'Nearest Enterprise branch',
-        carClass: 'Compact · similar to Nissan Sentra',
-        dailyRateUsd: 68,
-        accessLegs: [
-          {
-            mode: 'walk',
-            title: 'Walk to the rental office',
-            from: 'Origin',
-            to: 'Nearest Enterprise branch',
-            durationMinutes: 12,
-            distanceMiles: 0.6,
-            costUsd: 0,
-          },
-        ],
-        pickupProcessMinutes: 20,
-        notes: ['Estimated from national average rates'],
-      },
-    ],
+      { company: 'Enterprise', dailyRateUsd: 68, carClass: 'Compact · Nissan Sentra or similar', walkMinutes: 12 },
+      { company: 'Hertz', dailyRateUsd: 79, carClass: 'Midsize · Toyota Corolla or similar', walkMinutes: 15 },
+      { company: 'Avis', dailyRateUsd: 74, carClass: 'Midsize · Hyundai Elantra or similar', walkMinutes: 14 },
+      { company: 'Alamo', dailyRateUsd: 65, carClass: 'Economy · Chevy Spark or similar', walkMinutes: 18 },
+      { company: 'National', dailyRateUsd: 88, carClass: 'Full-size · Nissan Altima or similar', walkMinutes: 15 },
+      { company: 'Budget', dailyRateUsd: 62, carClass: 'Economy · Kia Rio or similar', walkMinutes: 17 },
+    ].map((c) => ({
+      company: c.company,
+      officeName: `${c.company} (nearest branch)`,
+      officeAddress: `Nearest ${c.company} branch`,
+      carClass: c.carClass,
+      dailyRateUsd: c.dailyRateUsd,
+      accessLegs: [
+        {
+          mode: 'walk' as const,
+          title: `Walk to the ${c.company} office`,
+          from: 'Origin',
+          to: `Nearest ${c.company} branch`,
+          durationMinutes: c.walkMinutes,
+          distanceMiles: Math.round(c.walkMinutes * 5) / 100,
+          costUsd: 0,
+        },
+      ],
+      pickupProcessMinutes: 20,
+      notes: ['Estimated from national average rates'],
+    })),
   },
 };
 
