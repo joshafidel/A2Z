@@ -5,7 +5,9 @@
  * Amtrak-direct booking link, and exact-flight provider links.
  */
 
+import { airportsNear, busTerminalFor, trainStationFor } from '../src/data/airports';
 import { generateBuses } from '../src/services/busService';
+import { searchFlights } from '../src/services/flightService';
 import {
   buildFlightProviderLinks,
   buildTicketPurchaseLink,
@@ -82,6 +84,55 @@ describe('unfamiliar addresses are resolved, never guessed', () => {
     const trains = await generateTrains('Chicago, IL', 'St. Louis, MO');
     expect(trains.length).toBeGreaterThan(0);
     expect(trains[0].provider).toBe('Amtrak');
+  });
+});
+
+describe('departure points near the origin', () => {
+  it('finds every NYC airport — JFK, LGA, and EWR', () => {
+    const near = airportsNear({ lat: 40.7128, lng: -74.006 }, 80);
+    const codes = near.map((n) => n.airport.code);
+    expect(codes).toEqual(expect.arrayContaining(['JFK', 'LGA', 'EWR']));
+    // Sorted closest first.
+    const miles = near.map((n) => n.miles);
+    expect([...miles].sort((a, b) => a - b)).toEqual(miles);
+  });
+
+  it('always returns at least one airport even for remote spots', () => {
+    // Middle of Montana — nothing within 80 miles.
+    const near = airportsNear({ lat: 47.0, lng: -109.0 }, 80);
+    expect(near.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('names the real rail hub and bus terminal for major cities', () => {
+    expect(trainStationFor('New York')).toContain('Moynihan');
+    expect(busTerminalFor('New York')).toContain('Port Authority');
+    expect(trainStationFor('Smallville')).toBe('Smallville Amtrak Station');
+  });
+});
+
+describe('flights from every nearby airport', () => {
+  it('generates flights out of multiple origin airports for NYC', async () => {
+    const flights = await generateFlights('New York, NY', 'Miami, FL');
+    const codes = new Set(
+      flights.map((f) => f.fromStation.match(/\(([A-Z]{3})\)/)?.[1]).filter(Boolean),
+    );
+    expect(codes.size).toBeGreaterThanOrEqual(2);
+    expect(codes).toContain('JFK');
+  });
+
+  it('adds JFK/EWR departures alongside the curated LGA shuttle on NYC-Boston', async () => {
+    const result = await searchFlights('nyc-boston', {
+      originAddress: 'New York, NY',
+      destAddress: 'Boston, MA',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const codes = new Set(
+      result.data.map((f) => f.fromStation.match(/\(([A-Z]{3})\)/)?.[1]).filter(Boolean),
+    );
+    expect(codes).toContain('LGA');
+    expect(codes).toContain('JFK');
+    expect(codes).toContain('EWR');
   });
 });
 

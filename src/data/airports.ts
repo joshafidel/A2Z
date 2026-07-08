@@ -163,6 +163,61 @@ export function nearestAirport(coords: { lat: number; lng: number }): Airport {
   );
 }
 
+/**
+ * ALL airports near a point (e.g. NYC → JFK, LGA, EWR), closest first.
+ * Always returns at least the single nearest airport, so remote origins
+ * still get a departure point.
+ */
+export function airportsNear(
+  coords: { lat: number; lng: number },
+  radiusMiles = 80,
+  max = 4,
+): Array<{ airport: Airport; miles: number }> {
+  const ranked = AIRPORTS.map((airport) => ({ airport, miles: haversineMiles(coords, airport) }))
+    .sort((a, b) => a.miles - b.miles);
+  const within = ranked.filter((r) => r.miles <= radiusMiles).slice(0, max);
+  return within.length > 0 ? within : ranked.slice(0, 1);
+}
+
+/** Main intercity rail station per city (Amtrak's actual hubs). */
+const TRAIN_STATIONS: Record<string, string> = {
+  'New York': 'Moynihan Train Hall (NYP)',
+  Newark: 'Newark Penn Station (NWK)',
+  Boston: 'Boston South Station (BOS)',
+  Washington: 'Washington Union Station (WAS)',
+  Philadelphia: 'Gray 30th Street Station (PHL)',
+  Chicago: 'Chicago Union Station (CHI)',
+  'Los Angeles': 'LA Union Station (LAX)',
+  Seattle: 'King Street Station (SEA)',
+  Portland: 'Portland Union Station (PDX)',
+  Denver: 'Denver Union Station (DEN)',
+  Miami: 'Miami Amtrak Station (MIA)',
+  Baltimore: 'Baltimore Penn Station (BAL)',
+  'San Diego': 'Santa Fe Depot (SAN)',
+  Sacramento: 'Sacramento Valley Station (SAC)',
+  'St. Louis': 'Gateway Transportation Center (STL)',
+  'New Orleans': 'New Orleans Union Terminal (NOL)',
+};
+
+export function trainStationFor(city: string): string {
+  return TRAIN_STATIONS[city] ?? `${city} Amtrak Station`;
+}
+
+/** Main intercity bus terminal per city. */
+const BUS_TERMINALS: Record<string, string> = {
+  'New York': 'Port Authority Bus Terminal',
+  Boston: 'South Station Bus Terminal',
+  Washington: 'Union Station Bus Terminal',
+  Chicago: 'Chicago Bus Station (Harrison St)',
+  'Los Angeles': 'Union Station Patsaouras Plaza',
+  Atlanta: 'Atlanta Greyhound Station',
+  Miami: 'Miami Intermodal Center',
+};
+
+export function busTerminalFor(city: string): string {
+  return BUS_TERMINALS[city] ?? `${city} bus terminal`;
+}
+
 /** Nearest known city to a coordinate, with its distance. */
 export function nearestCity(coords: { lat: number; lng: number }): { entry: CityEntry; miles: number } {
   let best = CITY_COORDS[0];

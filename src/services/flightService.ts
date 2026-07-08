@@ -10,7 +10,7 @@
  * offers into LineHaulOption. Keep bag fees from the ancillaries response.
  */
 
-import { haversineMiles, nearestAirport } from '../data/airports';
+import { airportsNear, haversineMiles, nearestAirport } from '../data/airports';
 import { resolveCityCoords } from './geoService';
 import type { CorridorKey } from '../data/cities';
 import type { ServiceResult } from '../types';
@@ -19,8 +19,9 @@ import type { LineHaulOption } from './legTypes';
 
 /**
  * Generate realistic flights between ANY two cities using real geography:
- * nearest major airports + haversine distance drive duration and fares.
- * This guarantees flights always populate, Miami included.
+ * EVERY airport near the origin (NYC → JFK, LGA, EWR) with haversine-scaled
+ * durations and fares. The UI lets travelers toggle departure airports on
+ * and off; each airport contributes its own set of flights.
  */
 export async function generateFlights(
   originAddress: string,
@@ -31,39 +32,41 @@ export async function generateFlights(
   const from = (await resolveCityCoords(originAddress)) ?? { city: 'New York', lat: 40.7128, lng: -74.006 };
   const to = await resolveCityCoords(destAddress);
   if (!to) return []; // truly unresolvable destination
+  if (haversineMiles(from, to) < 75) return []; // nobody flies across town
 
-  const origin = nearestAirport(from);
+  const origins = airportsNear(from, 80, 3);
   const dest = nearestAirport(to);
-  if (origin.code === dest.code) return []; // same airport → not a flight trip
-
-  const miles = haversineMiles(origin, dest);
-  // Real-world approximation: taxi+climb overhead + ~500 mph cruise.
-  const durationMinutes = Math.round(40 + miles / 8.3);
-  const baseFare = Math.round(59 + miles * 0.11);
   const carriers = [
     { provider: 'Delta', prefix: 'DL' },
     { provider: 'American', prefix: 'AA' },
     { provider: 'JetBlue', prefix: 'B6' },
   ];
 
-  return carriers.map((carrier, i) => ({
-    id: `fl-gen-${origin.code}-${dest.code}-${i}`,
-    mode: 'flight' as const,
-    provider: carrier.provider,
-    serviceName: `${carrier.prefix} ${1200 + i * 341 + (miles % 97)}`,
-    fromStation: `${origin.name} (${origin.code})`,
-    toStation: `${dest.name} (${dest.code})`,
-    departOffsetMinutes: 150 + i * 45,
-    durationMinutes,
-    farePerPersonUsd: Math.round(baseFare * (1 + i * 0.12)),
-    bagFeeUsd: 35,
-    seatFeeUsd: 29,
-    reliabilityScore: 74 - i * 2,
-    comfortScore: 62,
-    baseDelayRisk: 0.28,
-    bookingUrl: 'https://www.google.com/travel/flights',
-    notes: [`${miles} mi nonstop`, 'Fare is an estimate — tap “Compare live fares” for today’s price'],
-  }));
+  return origins.flatMap(({ airport: origin }, a) => {
+    if (origin.code === dest.code) return []; // same airport → not a flight trip
+    const miles = haversineMiles(origin, dest);
+    // Real-world approximation: taxi+climb overhead + ~500 mph cruise.
+    const durationMinutes = Math.round(40 + miles / 8.3);
+    const baseFare = Math.round(59 + miles * 0.11);
+    return carriers.map((carrier, i) => ({
+      id: `fl-gen-${origin.code}-${dest.code}-${i}`,
+      mode: 'flight' as const,
+      provider: carrier.provider,
+      serviceName: `${carrier.prefix} ${1200 + i * 341 + a * 57 + (miles % 97)}`,
+      fromStation: `${origin.name} (${origin.code})`,
+      toStation: `${dest.name} (${dest.code})`,
+      departOffsetMinutes: 150 + i * 45 + a * 20,
+      durationMinutes,
+      farePerPersonUsd: Math.round(baseFare * (1 + i * 0.12) * (1 + a * 0.04)),
+      bagFeeUsd: 35,
+      seatFeeUsd: 29,
+      reliabilityScore: 74 - i * 2,
+      comfortScore: 62,
+      baseDelayRisk: 0.28,
+      bookingUrl: 'https://www.google.com/travel/flights',
+      notes: [`${miles} mi nonstop`, 'Fare is an estimate — tap “Compare live fares” for today’s price'],
+    }));
+  });
 }
 
 /** IATA codes per corridor for live fare lookups + Google Flights links. */
@@ -223,12 +226,27 @@ export async function searchFlights(
   const options = FLIGHTS[corridor];
   if (!options) {
     // No curated corridor — generate flights from real geography so they
-    // always populate (nearest airports + great-circle distance).
+    // always populate (every nearby origin airport + great-circle distance).
     if (opts.originAddress && opts.destAddress) {
       return { ok: true, data: await generateFlights(opts.originAddress, opts.destAddress) };
     }
     return { ok: true, data: [] };
   }
-  // Estimates until live keys are configured — booking links show live fares.
-  return { ok: true, data: options.map((o) => ({ ...o, notes: [...(o.notes ?? []), 'Fare is an estimate — tap “Compare live fares” for today’s price'] })) };
+  // Curated corridor: keep the calibrated flights and add generated ones
+  // from the OTHER nearby airports (NYC's curated shuttle is LGA — JFK and
+  // EWR departures come from geography), so every airport is toggleable.
+  const curated = options.map((o) => ({
+    ...o,
+    notes: [...(o.notes ?? []), 'Fare is an estimate — tap “Compare live fares” for today’s price'],
+  }));
+  if (opts.originAddress && opts.destAddress) {
+    const curatedCodes = new Set(
+      curated.map((o) => o.fromStation.match(/\(([A-Z]{3})\)/)?.[1]).filter(Boolean),
+    );
+    const generated = (await generateFlights(opts.originAddress, opts.destAddress)).filter(
+      (o) => !curatedCodes.has(o.fromStation.match(/\(([A-Z]{3})\)/)?.[1]),
+    );
+    return { ok: true, data: [...curated, ...generated] };
+  }
+  return { ok: true, data: curated };
 }

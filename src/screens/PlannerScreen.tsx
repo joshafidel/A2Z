@@ -25,6 +25,7 @@ import {
   type AccessOption,
 } from '../services/accessService';
 import {
+  buildBusBookingLink,
   buildFlightProviderLinks,
   buildGoogleMapsLink,
   buildTicketPurchaseLink,
@@ -32,7 +33,8 @@ import {
 import { aiConfigured, generateConciergePlan } from '../services/aiService';
 import { openBookingLink } from '../components/BookingLinks';
 import { CORRIDOR_CITIES } from '../data/cities';
-import { findCityCoords } from '../data/airports';
+import { airportsNear, busTerminalFor, findCityCoords, nearestCity, trainStationFor } from '../data/airports';
+import { resolveCityCoords } from '../services/geoService';
 import { getCurrentLocation } from '../services/locationService';
 import { getHotelRecommendations } from '../services/hotelService';
 import { detectCityKey } from '../data/cities';
@@ -41,9 +43,6 @@ import {
   buildRouteForTicket,
   getTicketsForMode,
   searchRoutes,
-  statsFromRoutes,
-  statsFromTickets,
-  type ModeStats,
   type TicketOption,
   type TripSearchResults,
 } from '../services/tripService';
@@ -67,15 +66,26 @@ import { formatDuration, formatMoney, formatTime } from '../utils/time';
 // ---------------------------------------------------------------------------
 
 type StepId =
-  | 'origin'
   | 'destination'
-  | 'date'
   | 'mode'
+  | 'origin'
+  | 'stations'
+  | 'date'
   | 'tickets'
   | 'hotel'
   | 'firstMile'
   | 'lastMile'
   | 'summary';
+
+/** A departure node (airport / rail station / bus terminal) near the origin. */
+interface StationNode {
+  id: string;
+  kind: 'flight' | 'train' | 'bus';
+  name: string;
+  code?: string; // IATA for airports
+  miles?: number;
+  enabled: boolean;
+}
 
 type GroupKey = 'flights' | 'trains' | 'buses' | 'cars' | 'transit';
 
@@ -99,10 +109,11 @@ const GROUPS: Array<{
 ];
 
 const STEP_TITLES: Record<StepId, string> = {
-  origin: 'Where are you coming from?',
   destination: 'Where are you going?',
-  date: 'When are you leaving?',
   mode: 'How do you want to get there?',
+  origin: 'Where are you coming from?',
+  stations: 'Your departure points',
+  date: 'When are you leaving?',
   tickets: 'Pick your ticket',
   hotel: 'Pick your stay',
   firstMile: 'Getting to your departure point',
@@ -140,14 +151,13 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
   const [search, setSearch] = useState<TripSearch>();
   const [results, setResults] = useState<TripSearchResults>();
   const [searching, setSearching] = useState(false);
-  const [group, setGroup] = useState<GroupKey>();
+  const [groups, setGroups] = useState<GroupKey[]>([]); // multi-select travel modes
+  const [stations, setStations] = useState<StationNode[]>(); // toggleable departure nodes
   const [ticketBoards, setTicketBoards] = useState<Partial<Record<GroupKey, TicketOption[]>>>({});
-  const [modeStats, setModeStats] = useState<Partial<Record<GroupKey, ModeStats>>>({});
   const [ticket, setTicket] = useState<TicketOption>();
   const [ticketSort, setTicketSort] = useState<'recommended' | 'price' | 'time'>('recommended');
   const [pendingTicket, setPendingTicket] = useState<TicketOption>(); // showing purchase choices
   const [purchaseIntent, setPurchaseIntent] = useState<'now' | 'end' | 'later'>();
-  const [showOtherModes, setShowOtherModes] = useState(false);
   const [hotelTiming, setHotelTiming] = useState<'first' | 'later'>('first');
   const [directRoute, setDirectRoute] = useState<RouteOption>();
   const [purpose, setPurpose] = useState<TripPurpose>();
@@ -174,16 +184,28 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     storage.getHomePlace().then(setHomePlace);
   }, []);
 
-  // Step ordering (dynamic: hotel + access steps are conditional) -----------
-  const chosenGroupDef = GROUPS.find((g) => g.key === group);
-  const isLineHaul = Boolean(chosenGroupDef?.lineHaulMode);
+  // Step ordering (dynamic: stations/hotel/access steps are conditional) ----
+  const selectedGroupDefs = GROUPS.filter((g) => groups.includes(g.key));
+  const selectedHaulModes = selectedGroupDefs
+    .map((g) => g.lineHaulMode)
+    .filter((m): m is 'flight' | 'train' | 'bus' => Boolean(m));
+  /** The line-haul mode driving access steps: the chosen ticket's, else the first selected. */
+  const activeHaulMode: 'flight' | 'train' | 'bus' | undefined = ticket
+    ? (ticket.haul.mode as 'flight' | 'train' | 'bus')
+    : directRoute
+      ? undefined
+      : selectedHaulModes[0];
+  const isLineHaul = ticket ? true : directRoute ? false : selectedHaulModes.length > 0;
+  const hasStationsStep = selectedHaulModes.length > 0;
   const steps: StepId[] = useMemo(() => {
-    const list: StepId[] = ['origin', 'destination', 'date', 'mode', 'tickets'];
+    const list: StepId[] = ['destination', 'mode', 'origin'];
+    if (hasStationsStep) list.push('stations');
+    list.push('date', 'tickets');
     if (needHotel) list.push('hotel');
     if (isLineHaul) list.push('firstMile', 'lastMile');
     list.push('summary');
     return list;
-  }, [needHotel, isLineHaul]);
+  }, [needHotel, isLineHaul, hasStationsStep]);
 
   const [stepIndex, setStepIndex] = useState(0);
   const step = steps[Math.min(stepIndex, steps.length - 1)];
@@ -218,9 +240,7 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
   };
   const resetFromSearch = () => {
     setResults(undefined);
-    setGroup(undefined);
     setTicketBoards({});
-    setModeStats({});
     setHotels(undefined);
     setHotel(undefined);
     setHotelDecided(false);
@@ -269,58 +289,92 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     );
   }, [results]);
 
+  // --- Auto-locate: the origin step pre-fills your current address ---------
   useEffect(() => {
-    if (step !== 'mode' || !results || !search) return;
+    if (step !== 'origin' || origin || locating) return;
     let cancelled = false;
-    (async () => {
-      // All groups load in parallel so the stats appear together, fast.
-      const entries = await Promise.all(
-        grouped.map(async (g) => {
-          if (g.lineHaulMode) {
-            const board = await getTicketsForMode(results.corridor, g.lineHaulMode, search);
-            if (board.ok) {
-              // Door-to-door overhead = representative route minus its haul leg.
-              const rep = g.routes[0];
-              const haulSeg = rep.segments.find((s2) => s2.mode === g.lineHaulMode);
-              const overhead = rep.totalDurationMinutes - (haulSeg?.durationMinutes ?? 0);
-              return { key: g.key, board: board.data, stats: statsFromTickets(board.data, overhead) };
-            }
-          }
-          return { key: g.key, board: undefined, stats: statsFromRoutes(g.routes) };
-        }),
-      );
+    setLocating(true);
+    getCurrentLocation().then((r) => {
       if (cancelled) return;
-      const stats: Partial<Record<GroupKey, ModeStats>> = {};
-      const boards: Partial<Record<GroupKey, TicketOption[]>> = {};
-      for (const e of entries) {
-        stats[e.key] = e.stats;
-        if (e.board) boards[e.key] = e.board;
+      setLocating(false);
+      if (r.ok) {
+        // The exact address lands in the search bar — edit it or continue.
+        setOrigin({ ...r.data, label: r.data.address });
+        setSearch(undefined);
+        setStations(undefined);
+        resetFromSearch();
       }
-      setTicketBoards(boards);
-      setModeStats(stats);
-    })();
+    });
     return () => {
       cancelled = true;
     };
-  }, [step, results, search, grouped]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
 
-  // Fast path: if the user picks a mode before the stats pass finished,
-  // fetch that mode's board directly so the ticket screen never stalls.
+  // --- Departure nodes: every airport/station/terminal near the origin -----
   useEffect(() => {
-    if (step !== 'tickets' || !results || !search || !chosenGroupDef?.lineHaulMode) return;
-    if (ticketBoards[chosenGroupDef.key]) return;
+    if (step !== 'stations' || !origin || stations) return;
     let cancelled = false;
     (async () => {
-      const board = await getTicketsForMode(results.corridor, chosenGroupDef.lineHaulMode!, search);
-      if (!cancelled && board.ok) {
-        setTicketBoards((prev) => ({ ...prev, [chosenGroupDef.key]: board.data }));
+      const resolved = await resolveCityCoords(origin.address);
+      const coords =
+        origin.lat !== undefined && origin.lng !== undefined
+          ? { lat: origin.lat, lng: origin.lng }
+          : resolved;
+      if (cancelled) return;
+      if (!coords) {
+        setStepError(`Couldn't locate "${origin.label ?? origin.address}" — try a nearby city name.`);
+        return;
       }
-      if (!cancelled && !board.ok) setStepError(board.error);
+      const nodes: StationNode[] = [];
+      if (groups.includes('flights')) {
+        for (const { airport, miles } of airportsNear(coords, 80, 4)) {
+          nodes.push({
+            id: `air-${airport.code}`,
+            kind: 'flight',
+            name: `${airport.name} (${airport.code})`,
+            code: airport.code,
+            miles,
+            enabled: true,
+          });
+        }
+      }
+      const city = resolved?.city ?? nearestCity(coords).entry.city;
+      if (groups.includes('trains') && (resolved?.amtrak ?? true)) {
+        nodes.push({ id: 'rail-main', kind: 'train', name: trainStationFor(city), enabled: true });
+      }
+      if (groups.includes('buses')) {
+        nodes.push({ id: 'bus-main', kind: 'bus', name: busTerminalFor(city), enabled: true });
+      }
+      setStations(nodes);
     })();
     return () => {
       cancelled = true;
     };
-  }, [step, results, search, chosenGroupDef, ticketBoards]);
+  }, [step, origin, groups, stations]);
+
+  // --- Ticket boards for EVERY selected mode, in parallel -------------------
+  useEffect(() => {
+    if (step !== 'tickets' || !results || !search) return;
+    let cancelled = false;
+    (async () => {
+      await Promise.all(
+        selectedGroupDefs
+          .filter((g) => g.lineHaulMode)
+          .map(async (g) => {
+            if (ticketBoards[g.key]) return;
+            const board = await getTicketsForMode(results.corridor, g.lineHaulMode!, search);
+            if (cancelled) return;
+            // An empty board (no service) still marks the mode as loaded.
+            setTicketBoards((prev) => ({ ...prev, [g.key]: board.ok ? board.data : [] }));
+          }),
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, results, search, groups]);
 
   // --- Hotels (prefetched while the user is still picking a ticket) --------
   useEffect(() => {
@@ -330,7 +384,7 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     (async () => {
       const cityKey = detectCityKey(search.destination.address);
       const result = await getHotelRecommendations(cityKey, {
-        arrivingByAir: group === 'flights',
+        arrivingByAir: ticket?.haul.mode === 'flight' || groups.includes('flights'),
         destinationQuery: search.destination.address,
         purpose,
         area: hotelArea,
@@ -344,18 +398,19 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     return () => {
       cancelled = true;
     };
-  }, [step, search, purpose, group, hotelArea, customArea, hotelPriceSort, needHotel]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, search, purpose, ticket, hotelArea, customArea, hotelPriceSort, needHotel]);
 
   // --- Access options (prefetched in parallel from the ticket step on) ------
   useEffect(() => {
-    if (!results || !search || !chosenGroupDef?.lineHaulMode) return;
+    if (!results || !search || !activeHaulMode) return;
     if (!['tickets', 'hotel', 'firstMile', 'lastMile'].includes(step)) return;
     const facets: Record<string, [string, string]> = {
       flight: ['to-airport', 'from-airport'],
       train: ['to-train', 'from-train'],
       bus: ['to-bus', 'from-bus'],
     };
-    const [accessFacet, egressFacet] = facets[chosenGroupDef.lineHaulMode];
+    const [accessFacet, egressFacet] = facets[activeHaulMode];
     let cancelled = false;
     (async () => {
       const [first, last] = await Promise.all([
@@ -379,7 +434,8 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     return () => {
       cancelled = true;
     };
-  }, [step, results, search, chosenGroupDef, firstOptions, lastOptions]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, results, search, activeHaulMode, firstOptions, lastOptions]);
 
   // --- Final plan -------------------------------------------------------------
   useEffect(() => {
@@ -426,15 +482,38 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     });
   };
 
+  /**
+   * "Book now" target: the page with THIS exact flight/train selected.
+   * Flights → Google Flights resolved to the flight number; trains →
+   * amtrak.com; buses → the carrier's own site.
+   */
+  const exactBookingLinkFor = (t: TicketOption) => {
+    if (t.haul.mode === 'flight') {
+      const links = flightProviderLinksFor(t);
+      return links.find((l) => l.provider === 'Google Flights') ?? purchaseLinkFor(t);
+    }
+    if (t.haul.mode === 'bus') {
+      // Straight to the carrier that runs this exact departure.
+      return buildBusBookingLink(t.haul.provider, t.haul.bookingUrl);
+    }
+    return purchaseLinkFor(t);
+  };
+
   const chooseTicket = (t: TicketOption, intent: 'now' | 'end' | 'later', openDefault = true) => {
     setTicket(t);
+    setDirectRoute(undefined);
     setPurchaseIntent(intent);
     setPendingTicket(undefined);
     setFinalRoute(undefined);
     setAiPlan(undefined);
+    // Re-fetch access legs for the exact stations on this ticket.
+    setFirstOptions(undefined);
+    setLastOptions(undefined);
+    setFirstMile(undefined);
+    setLastMile(undefined);
     if (intent === 'now' && openDefault) {
-      // Automatically open the provider's site/app for purchase.
-      const link = purchaseLinkFor(t);
+      // Automatically open the booking page with this exact flight/train.
+      const link = exactBookingLinkFor(t);
       if (link) openBookingLink(link);
     }
     setTimeout(goNext, 100);
@@ -488,10 +567,11 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
       >
         {stepError ? <ErrorState message={stepError} onRetry={() => setStepError(undefined)} /> : null}
 
-        {step === 'origin' && renderPlaceStep('origin')}
         {step === 'destination' && renderPlaceStep('destination')}
-        {step === 'date' && renderDateStep()}
         {step === 'mode' && renderModeStep()}
+        {step === 'origin' && renderPlaceStep('origin')}
+        {step === 'stations' && renderStationsStep()}
+        {step === 'date' && renderDateStep()}
         {step === 'tickets' && renderTicketStep()}
         {step === 'hotel' && renderHotelStep()}
         {step === 'firstMile' && renderAccessStep('first')}
@@ -519,6 +599,10 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
       const landing = ticket?.haul.toStation ?? 'arrival';
       return `${landing} → ${finalTargetLabel()}`;
     }
+    if (s === 'stations') {
+      const from = origin?.label?.split(',')[0] ?? origin?.address.split(',')[0];
+      return from ? `Departure points near ${from}` : STEP_TITLES[s];
+    }
     return STEP_TITLES[s];
   }
 
@@ -528,10 +612,12 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
         return Boolean(origin);
       case 'destination':
         return Boolean(destination);
+      case 'stations':
+        return Boolean(stations?.some((n) => n.enabled));
       case 'date':
         return Boolean(results);
       case 'mode':
-        return Boolean(group);
+        return groups.length > 0;
       case 'tickets':
         return Boolean(ticket || directRoute);
       case 'hotel':
@@ -548,19 +634,29 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
   function renderPlaceStep(which: 'origin' | 'destination') {
     const current = which === 'origin' ? origin : destination;
     const setPlace = (p: Place) => {
-      if (which === 'origin') setOrigin(p);
-      else setDestination(p);
+      if (which === 'origin') {
+        setOrigin(p);
+        setStations(undefined);
+      } else setDestination(p);
       setSearch(undefined);
       resetFromSearch();
     };
     return (
       <View style={styles.stepBody}>
+        {which === 'origin' && locating && (
+          <Text style={styles.stepHint}>Finding your current location…</Text>
+        )}
+        {which === 'origin' && !locating && origin?.lat !== undefined && (
+          <Text style={styles.stepHint}>
+            That's your current address — edit it or keep going.
+          </Text>
+        )}
         <PlaceInput
           placeholder={
             which === 'origin' ? 'Address, station, or airport' : 'Address, hotel, or city'
           }
           value={current?.label}
-          autoFocus={!current}
+          autoFocus={which === 'destination' && !current}
           onSelect={(p) => {
             setPlace({ address: p.address, label: p.label });
             // Auto-advance once a real place is chosen.
@@ -582,15 +678,14 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
           )}
           {which === 'origin' && (
             <Chip
-              label={locating ? 'Locating…' : 'Current location'}
+              label={locating ? 'Locating…' : 'Use current location'}
               icon="locate"
               onPress={async () => {
                 setLocating(true);
                 const r = await getCurrentLocation();
                 setLocating(false);
                 if (r.ok) {
-                  setPlace({ address: r.data.address, label: 'Current location' });
-                  setTimeout(goNext, 150);
+                  setPlace({ ...r.data, label: r.data.address });
                 } else {
                   setStepError(r.error);
                 }
@@ -599,7 +694,11 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
           )}
         </View>
 
-        {current && current.label !== 'Home' && (
+        {which === 'origin' && current && (
+          <AppButton label="Continue from here" icon="arrow-forward" onPress={goNext} />
+        )}
+
+        {which === 'origin' && current && current.label !== 'Home' && (
           <Pressable
             style={styles.saveHomeRow}
             onPress={async () => {
@@ -618,59 +717,6 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
                 : `Save "${current.label}" as home`}
             </Text>
           </Pressable>
-        )}
-
-        {which === 'destination' && (
-          <Card style={styles.hotelAsk}>
-            <Pressable
-              onPress={() => setNeedHotel((v) => !v)}
-              accessibilityRole="checkbox"
-              accessibilityState={{ checked: needHotel }}
-              style={styles.hotelAskRow}
-            >
-              <View style={[styles.checkbox, needHotel && styles.checkboxChecked]}>
-                {needHotel && <Ionicons name="checkmark" size={15} color="#FFFFFF" />}
-              </View>
-              <Ionicons name="bed" size={18} color={colors.primary} />
-              <Text style={styles.hotelAskText}>I need a hotel there</Text>
-            </Pressable>
-            <Text style={styles.hotelAskHint}>
-              We'll show stays matched to your trip right after you pick your ticket.
-            </Text>
-            {needHotel && (
-              <View style={styles.timingBlock}>
-                <Text style={styles.timingLabel}>WHEN DO YOU GET THERE?</Text>
-                {(
-                  [
-                    { value: 'first', label: 'The hotel is my first stop' },
-                    { value: 'later', label: "I'm going somewhere else first" },
-                  ] as const
-                ).map((opt) => (
-                  <Pressable
-                    key={opt.value}
-                    onPress={() => setHotelTiming(opt.value)}
-                    accessibilityRole="radio"
-                    accessibilityState={{ selected: hotelTiming === opt.value }}
-                    style={styles.timingRow}
-                  >
-                    <Ionicons
-                      name={hotelTiming === opt.value ? 'radio-button-on' : 'radio-button-off'}
-                      size={18}
-                      color={hotelTiming === opt.value ? colors.primary : colors.textMuted}
-                    />
-                    <Text
-                      style={[
-                        styles.timingText,
-                        hotelTiming === opt.value && styles.timingTextSelected,
-                      ]}
-                    >
-                      {opt.label}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-            )}
-          </Card>
         )}
       </View>
     );
@@ -700,6 +746,54 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
           <Counter label="Bags" icon="briefcase" value={bags} min={0} onChange={setBags} />
         </View>
 
+        <Card style={styles.hotelAsk}>
+          <Pressable
+            onPress={() => setNeedHotel((v) => !v)}
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked: needHotel }}
+            style={styles.hotelAskRow}
+          >
+            <View style={[styles.checkbox, needHotel && styles.checkboxChecked]}>
+              {needHotel && <Ionicons name="checkmark" size={15} color="#FFFFFF" />}
+            </View>
+            <Ionicons name="bed" size={18} color={colors.primary} />
+            <Text style={styles.hotelAskText}>I need a hotel there</Text>
+          </Pressable>
+          {needHotel && (
+            <View style={styles.timingBlock}>
+              <Text style={styles.timingLabel}>WHEN DO YOU GET THERE?</Text>
+              {(
+                [
+                  { value: 'first', label: 'The hotel is my first stop' },
+                  { value: 'later', label: "I'm going somewhere else first" },
+                ] as const
+              ).map((opt) => (
+                <Pressable
+                  key={opt.value}
+                  onPress={() => setHotelTiming(opt.value)}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: hotelTiming === opt.value }}
+                  style={styles.timingRow}
+                >
+                  <Ionicons
+                    name={hotelTiming === opt.value ? 'radio-button-on' : 'radio-button-off'}
+                    size={18}
+                    color={hotelTiming === opt.value ? colors.primary : colors.textMuted}
+                  />
+                  <Text
+                    style={[
+                      styles.timingText,
+                      hotelTiming === opt.value && styles.timingTextSelected,
+                    ]}
+                  >
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
+        </Card>
+
         <AppButton
           label={date ? `Continue — ${date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}` : 'Pick a date to continue'}
           icon="arrow-forward"
@@ -711,125 +805,178 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
   }
 
   function renderModeStep() {
-    // Viability: on long trips, modes that take 3x+ the flight (or 12h+
-    // when flying is possible) are tucked away — visible to explore, but
-    // never pushed front and center.
-    const flightAvg = modeStats.flights?.durationMinutes.avg;
-    const isViable = (key: GroupKey) => {
-      if (key === 'flights' || !flightAvg) return true;
-      const s = modeStats[key];
-      if (!s) return true;
-      return s.durationMinutes.min <= Math.max(12 * 60, flightAvg * 3);
+    const toggleGroup = (key: GroupKey) => {
+      setGroups((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
+      setStations(undefined);
+      setTicketBoards({});
+      resetFromMode();
     };
-    const viableGroups = grouped.filter((g) => isViable(g.key));
-    const otherGroups = grouped.filter((g) => !isViable(g.key));
-
-    const renderGroupCard = (g: (typeof grouped)[number]) => {
-      const stats = modeStats[g.key];
-      return (
+    return (
+      <View style={styles.stepBody}>
+        <Text style={styles.stepHint}>
+          Check every way you'd consider — we'll pull real departures for all of them.
+        </Text>
+        {GROUPS.map((g) => {
+          const checked = groups.includes(g.key);
+          return (
             <Pressable
               key={g.key}
-              onPress={() => {
-                if (group !== g.key) resetFromMode();
-                setGroup(g.key);
-                setTimeout(goNext, 100);
-              }}
+              onPress={() => toggleGroup(g.key)}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked }}
               style={({ pressed }) => [
                 styles.modeCard,
-                group === g.key && styles.modeCardSelected,
+                checked && styles.modeCardSelected,
                 pressed && styles.pressed,
               ]}
             >
               <View style={styles.modeHeader}>
+                <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
+                  {checked && <Ionicons name="checkmark" size={15} color="#FFFFFF" />}
+                </View>
                 <View style={styles.modeIconCircle}>
                   <Ionicons name={g.icon} size={20} color={colors.primary} />
                 </View>
                 <Text style={styles.modeTitle}>{g.title}</Text>
-                <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
               </View>
-              {stats ? (
-                <View style={styles.statBlock}>
-                  {stats.price && (
-                    <StatTriple
-                      icon="pricetag-outline"
-                      cheap={formatMoney(stats.price.min)}
-                      avg={formatMoney(stats.price.avg)}
-                      expensive={formatMoney(stats.price.max)}
-                    />
-                  )}
-                  <StatTriple
-                    icon="time-outline"
-                    cheap={formatDuration(stats.durationMinutes.min)}
-                    avg={formatDuration(stats.durationMinutes.avg)}
-                    expensive={formatDuration(stats.durationMinutes.max)}
-                    labels={['fastest', 'typical', 'slowest']}
-                  />
-                  <Text style={styles.modeCount}>
-                    {stats.optionCount} option{stats.optionCount === 1 ? '' : 's'} available
-                  </Text>
-                </View>
-              ) : (
-                <Text style={styles.modeCount}>Loading price & time ranges…</Text>
-              )}
             </Pressable>
-      );
-    };
+          );
+        })}
+        <AppButton
+          label={groups.length > 0 ? 'Continue' : 'Pick at least one'}
+          icon="arrow-forward"
+          disabled={groups.length === 0}
+          onPress={goNext}
+        />
+      </View>
+    );
+  }
 
+  function renderStationsStep() {
+    if (!stations) return <LoadingState message="Finding airports & stations near you…" />;
+    if (stations.length === 0) {
+      return (
+        <View style={styles.stepBody}>
+          <Text style={styles.stepHint}>
+            No airports or stations found near your departure point for the modes you picked —
+            go back and adjust your travel modes.
+          </Text>
+        </View>
+      );
+    }
+    const toggle = (id: string) =>
+      setStations((prev) => prev?.map((n) => (n.id === id ? { ...n, enabled: !n.enabled } : n)));
+    const KIND_ICONS: Record<StationNode['kind'], keyof typeof Ionicons.glyphMap> = {
+      flight: 'airplane',
+      train: 'train',
+      bus: 'bus',
+    };
     return (
       <View style={styles.stepBody}>
         <Text style={styles.stepHint}>
-          Price and time ranges cover every option we found — cheapest, priciest, and typical.
+          These are your departure points. Turn one off and we won't show tickets leaving from it.
         </Text>
-        {viableGroups.map(renderGroupCard)}
-
-        {otherGroups.length > 0 && (
-          <>
-            <Pressable
-              onPress={() => setShowOtherModes((v) => !v)}
-              style={({ pressed }) => [styles.otherModesToggle, pressed && styles.pressed]}
-              accessibilityRole="button"
-              accessibilityState={{ expanded: showOtherModes }}
-            >
+        {stations.map((n) => (
+          <Pressable
+            key={n.id}
+            onPress={() => toggle(n.id)}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: n.enabled }}
+            style={({ pressed }) => [
+              styles.ticketCard,
+              n.enabled && styles.modeCardSelected,
+              pressed && styles.pressed,
+            ]}
+          >
+            <View style={styles.ticketRow}>
+              <View style={styles.modeIconCircle}>
+                <Ionicons
+                  name={KIND_ICONS[n.kind]}
+                  size={18}
+                  color={n.enabled ? colors.primary : colors.textMuted}
+                />
+              </View>
+              <View style={styles.flex1}>
+                <Text style={styles.ticketTimes}>{n.name}</Text>
+                <Text style={styles.ticketMeta}>
+                  {n.miles !== undefined ? `${n.miles} mi away · ` : ''}
+                  {n.enabled ? 'Included in your ticket search' : 'Turned off — no tickets from here'}
+                </Text>
+              </View>
               <Ionicons
-                name={showOtherModes ? 'chevron-down' : 'chevron-forward'}
-                size={16}
-                color={colors.textSecondary}
+                name={n.enabled ? 'checkmark-circle' : 'ellipse-outline'}
+                size={24}
+                color={n.enabled ? colors.success : colors.textMuted}
               />
-              <Text style={styles.otherModesText}>
-                {otherGroups.length} slower option{otherGroups.length === 1 ? '' : 's'} to explore (
-                {otherGroups.map((g) => g.title).join(', ')})
-              </Text>
-            </Pressable>
-            {showOtherModes && otherGroups.map(renderGroupCard)}
-          </>
-        )}
+            </View>
+          </Pressable>
+        ))}
+        <AppButton
+          label={stations.some((n) => n.enabled) ? 'Continue' : 'Turn on at least one'}
+          icon="arrow-forward"
+          disabled={!stations.some((n) => n.enabled)}
+          onPress={goNext}
+        />
       </View>
     );
   }
 
   function renderTicketStep() {
-    const g = chosenGroupDef;
-    if (!g) return null;
+    const haulGroups = selectedGroupDefs.filter((g) => g.lineHaulMode);
+    const directGroups = selectedGroupDefs.filter((g) => !g.lineHaulMode);
 
-    // Line-haul: real ticket board. Direct modes: pick the exact option.
-    if (g.lineHaulMode) {
-      const board = ticketBoards[g.key];
-      if (!board) return <LoadingState message="Loading departures…" />;
+    // Station gating: tickets only from departure points left turned ON.
+    const airportNodes = stations?.filter((n) => n.kind === 'flight') ?? [];
+    const enabledCodes = new Set(
+      airportNodes.filter((n) => n.enabled).map((n) => n.code).filter(Boolean),
+    );
+    const kindEnabled = (kind: StationNode['kind']) => {
+      const nodes = stations?.filter((n) => n.kind === kind) ?? [];
+      return nodes.length === 0 || nodes.some((n) => n.enabled);
+    };
+    const stationAllows = (t: TicketOption) => {
+      if (t.haul.mode === 'flight') {
+        if (airportNodes.length === 0) return true;
+        const code = t.haul.fromStation.match(/\(([A-Z]{3})\)/)?.[1];
+        return code ? enabledCodes.has(code) : true;
+      }
+      if (t.haul.mode === 'train') return kindEnabled('train');
+      if (t.haul.mode === 'bus') return kindEnabled('bus');
+      return true;
+    };
 
-      const sorted = [...board].sort((a, b) => {
-        if (ticketSort === 'price') {
-          return (a.farePerPersonUsd ?? Infinity) - (b.farePerPersonUsd ?? Infinity);
-        }
-        if (ticketSort === 'time') {
-          return new Date(a.departureTime).getTime() - new Date(b.departureTime).getTime();
-        }
-        // recommended first, then by departure
-        if (a.recommended !== b.recommended) return a.recommended ? -1 : 1;
+    if (haulGroups.length > 0 && haulGroups.some((g) => !ticketBoards[g.key])) {
+      return <LoadingState message="Pulling departures from every mode you picked…" />;
+    }
+
+    const merged = haulGroups.flatMap((g) => (ticketBoards[g.key] ?? []).filter(stationAllows));
+    const sorted = [...merged].sort((a, b) => {
+      if (ticketSort === 'price') {
+        return (a.farePerPersonUsd ?? Infinity) - (b.farePerPersonUsd ?? Infinity);
+      }
+      if (ticketSort === 'time') {
         return new Date(a.departureTime).getTime() - new Date(b.departureTime).getTime();
-      });
+      }
+      // recommended first, then by departure
+      if (a.recommended !== b.recommended) return a.recommended ? -1 : 1;
+      return new Date(a.departureTime).getTime() - new Date(b.departureTime).getTime();
+    });
 
+    const directOptions = directGroups.flatMap((g) => grouped.find((x) => x.key === g.key)?.routes ?? []);
+
+    if (sorted.length === 0 && directOptions.length === 0) {
       return (
         <View style={styles.stepBody}>
+          <Text style={styles.stepHint}>
+            No departures from your enabled stations for the modes you picked. Turn a departure
+            point back on, or go back and add another travel mode.
+          </Text>
+        </View>
+      );
+    }
+
+    const ticketList = sorted.length > 0 && (
+        <>
           <View style={styles.sortRow}>
             <Text style={styles.sortLabel}>SORT BY</Text>
             <Chip label="Recommended" selected={ticketSort === 'recommended'} onPress={() => setTicketSort('recommended')} />
@@ -838,6 +985,7 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
           </View>
           {sorted.map((t) => {
             const isPending = pendingTicket?.haul.id === t.haul.id;
+            const bookLink = exactBookingLinkFor(t);
             return (
               <Pressable
                 key={t.haul.id}
@@ -856,13 +1004,16 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
                   </View>
                 )}
                 <View style={styles.ticketRow}>
+                  <ModeIcon mode={t.haul.mode} size={15} />
                   <View style={styles.flex1}>
                     <Text style={styles.ticketTimes}>
                       {formatTime(t.departureTime)} → {formatTime(t.arrivalTime)}
                     </Text>
                     <Text style={styles.ticketMeta}>
                       {t.haul.provider} {t.haul.serviceName} · {formatDuration(t.haul.durationMinutes)}
-                      {t.haul.notes?.[0] ? ` · ${t.haul.notes[0]}` : ''}
+                    </Text>
+                    <Text style={styles.ticketMeta} numberOfLines={1}>
+                      {t.haul.fromStation} → {t.haul.toStation}
                     </Text>
                     {t.note ? <Text style={styles.ticketNote}>{t.note}</Text> : null}
                   </View>
@@ -877,31 +1028,30 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
                 {/* Purchase choices appear when the ticket is tapped */}
                 {isPending && (
                   <View style={styles.purchasePanel}>
-                    {t.haul.mode === 'flight' ? (
-                      <>
-                        <Text style={styles.purchaseHint}>Purchase now on:</Text>
-                        <View style={styles.providerGrid}>
-                          {flightProviderLinksFor(t).map((link) => (
-                            <Pressable
-                              key={link.id}
-                              onPress={() => {
-                                openBookingLink(link);
-                                chooseTicket(t, 'now', false);
-                              }}
-                              style={({ pressed }) => [styles.providerButton, pressed && styles.pressed]}
-                            >
-                              <Text style={styles.providerButtonText}>{link.label}</Text>
-                            </Pressable>
-                          ))}
-                        </View>
-                      </>
-                    ) : (
-                      <AppButton
-                        label={purchaseLinkFor(t)?.label ?? 'Purchase now'}
-                        icon="cart"
-                        small
-                        onPress={() => chooseTicket(t, 'now')}
-                      />
+                    <AppButton
+                      label={`Book now on ${bookLink?.provider ?? 'the booking site'}`}
+                      icon="cart"
+                      small
+                      onPress={() => chooseTicket(t, 'now')}
+                    />
+                    <Text style={styles.purchaseHint}>
+                      Opens with this exact {t.haul.mode === 'flight' ? 'flight' : t.haul.mode} selected.
+                    </Text>
+                    {t.haul.mode === 'flight' && (
+                      <View style={styles.providerGrid}>
+                        {flightProviderLinksFor(t).map((link) => (
+                          <Pressable
+                            key={link.id}
+                            onPress={() => {
+                              openBookingLink(link);
+                              chooseTicket(t, 'now', false);
+                            }}
+                            style={({ pressed }) => [styles.providerButton, pressed && styles.pressed]}
+                          >
+                            <Text style={styles.providerButtonText}>{link.label}</Text>
+                          </Pressable>
+                        ))}
+                      </View>
                     )}
                     <View style={styles.purchaseRow}>
                       <AppButton
@@ -924,18 +1074,24 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
               </Pressable>
             );
           })}
-        </View>
-      );
+        </>
+    );
+
+    if (directOptions.length === 0) {
+      return <View style={styles.stepBody}>{ticketList}</View>;
     }
 
-    const options = grouped.find((x) => x.key === g.key)?.routes ?? [];
+    const options = directOptions;
     const bestId = options.reduce(
       (best, r) => ((r.score?.overall ?? 0) > (options.find((o) => o.id === best)?.score?.overall ?? -1) ? r.id : best),
       options[0]?.id,
     );
     return (
       <View style={styles.stepBody}>
-        <Text style={styles.stepHint}>Pick your exact option — recommended first.</Text>
+        {ticketList}
+        <Text style={styles.stepHint}>
+          {sorted.length > 0 ? 'Or go without a ticket:' : 'Pick your exact option — recommended first.'}
+        </Text>
         {[...options]
           .sort((a, b) => (a.id === bestId ? -1 : b.id === bestId ? 1 : 0))
           .map((r) => (
@@ -943,6 +1099,7 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
               key={r.id}
               onPress={() => {
                 setDirectRoute(r);
+                setTicket(undefined);
                 setFinalRoute(undefined);
                 setTimeout(goNext, 100);
               }}
@@ -1105,10 +1262,10 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     };
     const station = which === 'first' ? ticket?.haul.fromStation : ticket?.haul.toStation;
     const endpoints =
-      results && search && chosenGroupDef?.lineHaulMode
+      results && search && activeHaulMode
         ? accessEndpoints(
             results.corridor,
-            facetsByMode[chosenGroupDef.lineHaulMode][which === 'first' ? 0 : 1],
+            facetsByMode[activeHaulMode][which === 'first' ? 0 : 1],
             search,
             station,
           )
@@ -1252,7 +1409,7 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
               icon="cart"
               small
               onPress={() => {
-                const link = purchaseLinkFor(ticket);
+                const link = exactBookingLinkFor(ticket);
                 if (link) openBookingLink(link);
               }}
             />
@@ -1357,38 +1514,6 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
 }
 
 // ---------------------------------------------------------------------------
-
-function StatTriple({
-  icon,
-  cheap,
-  avg,
-  expensive,
-  labels = ['cheapest', 'average', 'priciest'],
-}: {
-  icon: keyof typeof Ionicons.glyphMap;
-  cheap: string;
-  avg: string;
-  expensive: string;
-  labels?: [string, string, string] | string[];
-}) {
-  return (
-    <View style={styles.statTriple}>
-      <Ionicons name={icon} size={14} color={colors.textSecondary} />
-      <View style={styles.statCol}>
-        <Text style={styles.statValue}>{cheap}</Text>
-        <Text style={styles.statLabel}>{labels[0]}</Text>
-      </View>
-      <View style={styles.statCol}>
-        <Text style={[styles.statValue, styles.statAvg]}>{avg}</Text>
-        <Text style={styles.statLabel}>{labels[1]}</Text>
-      </View>
-      <View style={styles.statCol}>
-        <Text style={styles.statValue}>{expensive}</Text>
-        <Text style={styles.statLabel}>{labels[2]}</Text>
-      </View>
-    </View>
-  );
-}
 
 function Counter({
   label,
