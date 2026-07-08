@@ -773,6 +773,171 @@ const ACCESS: Record<string, LocalLeg[]> = {
   ],
 };
 
+/**
+ * Alternate public-transportation paths for a stretch — the Apple Maps-style
+ * "other routes" list. Each entry names its lines and carries full legs.
+ * Curated for the demo corridors; generic express-bus paths elsewhere.
+ */
+const TRANSIT_ALTS: Record<string, Array<{ title: string; legs: LocalLeg[] }>> = {
+  'nyc-boston:to-airport-transit': [
+    {
+      title: 'M60 SBS from 125 St',
+      legs: [
+        {
+          mode: 'transit',
+          title: 'Subway 1 train to 125 St',
+          from: 'Home (Upper West Side)',
+          to: '125 St Station',
+          durationMinutes: 14,
+          distanceMiles: 2.6,
+          costUsd: 2.9,
+          provider: 'MTA',
+        },
+        {
+          mode: 'airport-transfer',
+          title: 'M60 SBS bus to LGA',
+          from: '125 St & Lexington Av',
+          to: 'LGA Terminal C',
+          durationMinutes: 32,
+          distanceMiles: 6.8,
+          costUsd: 0,
+          provider: 'MTA',
+          notes: ['Free transfer from the subway'],
+        },
+      ],
+    },
+  ],
+  'nyc-boston:from-airport-transit': [
+    {
+      title: 'Blue Line via Airport Station',
+      legs: [
+        {
+          mode: 'airport-transfer',
+          title: 'Massport shuttle to Airport Station',
+          from: 'BOS Terminal A',
+          to: 'Airport Station (Blue Line)',
+          durationMinutes: 8,
+          distanceMiles: 1.1,
+          costUsd: 0,
+          provider: 'Massport',
+        },
+        {
+          mode: 'transit',
+          title: 'Blue Line to State St',
+          from: 'Airport Station',
+          to: 'State St Station',
+          durationMinutes: 12,
+          distanceMiles: 2.6,
+          costUsd: 2.4,
+          provider: 'MBTA',
+        },
+        {
+          mode: 'walk',
+          title: 'Walk to hotel',
+          from: 'State St Station',
+          to: 'Downtown hotel',
+          durationMinutes: 8,
+          distanceMiles: 0.4,
+          costUsd: 0,
+        },
+      ],
+    },
+  ],
+  'nyc-dc:from-airport-transit': [
+    {
+      title: 'Yellow Line via Gallery Place',
+      legs: [
+        {
+          mode: 'transit',
+          title: 'Metro Yellow Line to Gallery Place',
+          from: 'DCA Station',
+          to: 'Gallery Place',
+          durationMinutes: 15,
+          distanceMiles: 4.2,
+          costUsd: 2.65,
+          provider: 'WMATA',
+        },
+        {
+          mode: 'walk',
+          title: 'Walk to hotel',
+          from: 'Gallery Place',
+          to: 'Downtown DC hotel',
+          durationMinutes: 9,
+          distanceMiles: 0.45,
+          costUsd: 0,
+        },
+      ],
+    },
+  ],
+  'generic:to-airport-transit': [
+    {
+      title: 'Express airport bus',
+      legs: [
+        {
+          mode: 'walk',
+          title: 'Walk to the express-bus stop',
+          from: 'Origin',
+          to: 'Express-bus stop',
+          durationMinutes: 6,
+          distanceMiles: 0.3,
+          costUsd: 0,
+        },
+        {
+          mode: 'airport-transfer',
+          title: 'Express bus to the airport',
+          from: 'Express-bus stop',
+          to: 'Departure airport',
+          durationMinutes: 33,
+          distanceMiles: 11,
+          costUsd: 8,
+          provider: 'Airport express',
+          notes: ['Fewer stops than the local line'],
+        },
+      ],
+    },
+  ],
+  'generic:from-airport-transit': [
+    {
+      title: 'Express downtown bus',
+      legs: [
+        {
+          mode: 'airport-transfer',
+          title: 'Express bus downtown',
+          from: 'Arrival airport',
+          to: 'Downtown terminal',
+          durationMinutes: 28,
+          distanceMiles: 9,
+          costUsd: 8,
+          provider: 'Airport express',
+        },
+        {
+          mode: 'walk',
+          title: 'Walk to your destination',
+          from: 'Downtown terminal',
+          to: 'Destination',
+          durationMinutes: 7,
+          distanceMiles: 0.35,
+          costUsd: 0,
+        },
+      ],
+    },
+  ],
+};
+
+/** NYC's LGA paths apply to every NYC corridor with the same airport run. */
+TRANSIT_ALTS['nyc-dc:to-airport-transit'] = TRANSIT_ALTS['nyc-boston:to-airport-transit'];
+
+export function getTransitPathAlternatives(
+  corridor: CorridorKey,
+  facet: string,
+): Array<{ title: string; legs: LocalLeg[] }> {
+  return (
+    TRANSIT_ALTS[`${corridor}:${facet}-transit`] ??
+    TRANSIT_ALTS[`generic:${facet}-transit`] ??
+    []
+  );
+}
+
 export async function getLocalLegs(
   corridor: CorridorKey,
   facet: string,

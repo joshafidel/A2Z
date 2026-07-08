@@ -35,8 +35,20 @@ interface ProviderModel {
   etaMinutes: number;
   timeMultiplier: number; // ride time vs direct drive
   airportOnly?: boolean; // Uber Shuttle only runs on airport corridors
+  /** Only offered in these cities (checked against the trip's city). */
+  cities?: string[];
   note?: string;
 }
+
+/**
+ * Real provider coverage (no public coverage API exists — these lists track
+ * the providers' own service announcements):
+ *  - Uber Shuttle: launched late 2024 at JFK/LGA (New York), expanding to
+ *    Chicago, Charlotte, and Pittsburgh.
+ *  - Empower: operates in Washington, DC and is launching in Miami.
+ */
+const UBER_SHUTTLE_CITIES = ['New York', 'Chicago', 'Charlotte', 'Pittsburgh'];
+const EMPOWER_CITIES = ['Washington', 'Miami'];
 
 const PROVIDERS: ProviderModel[] = [
   {
@@ -55,6 +67,7 @@ const PROVIDERS: ProviderModel[] = [
     etaMinutes: 12,
     timeMultiplier: 1.45,
     airportOnly: true,
+    cities: UBER_SHUTTLE_CITIES,
     note: 'Shared van · fixed departures every ~30 min',
   },
   {
@@ -72,6 +85,7 @@ const PROVIDERS: ProviderModel[] = [
     spread: [0.92, 1.08],
     etaMinutes: 7,
     timeMultiplier: 1,
+    cities: EMPOWER_CITIES,
     note: 'Driver-set prices · popular in DC',
   },
   {
@@ -93,7 +107,7 @@ const PROVIDERS: ProviderModel[] = [
 export async function estimateRide(
   distanceMiles: number,
   rideMinutes: number,
-  opts: { airport?: boolean } = {},
+  opts: { airport?: boolean; city?: string } = {},
 ): Promise<ServiceResult<RideEstimate[]>> {
   if (isLive('uberServerToken')) {
     // REAL API: fetch live Uber/Lyft estimates here.
@@ -112,7 +126,12 @@ export async function estimateRide(
   const airportFee = opts.airport ? 5 : 0;
   const mid = base + perMile * distanceMiles + perMin * rideMinutes + airportFee;
 
-  const estimates = PROVIDERS.filter((p) => !p.airportOnly || opts.airport)
+  const estimates = PROVIDERS.filter(
+    (p) =>
+      (!p.airportOnly || opts.airport) &&
+      // City-limited providers only appear where they actually operate.
+      (!p.cities || (opts.city !== undefined && p.cities.includes(opts.city))),
+  )
     .map<RideEstimate>((p) => ({
       provider: p.provider,
       product: p.product,

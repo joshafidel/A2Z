@@ -22,8 +22,8 @@ const SEARCH: TripSearch = {
 };
 
 describe('rideshareService provider comparison', () => {
-  it('compares Uber, Lyft, Empower, and taxi on regular trips', async () => {
-    const result = await estimateRide(3, 15);
+  it('compares Uber, Lyft, Empower, and taxi in a city Empower serves', async () => {
+    const result = await estimateRide(3, 15, { city: 'Washington' });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const providers = result.data.map((e) => e.provider);
@@ -31,8 +31,8 @@ describe('rideshareService provider comparison', () => {
     expect(providers).not.toContain('Uber Shuttle'); // airport-only product
   });
 
-  it('adds Uber Shuttle on airport trips and sorts cheapest first', async () => {
-    const result = await estimateRide(10, 38, { airport: true });
+  it('adds Uber Shuttle on airport trips where it operates, sorted cheapest first', async () => {
+    const result = await estimateRide(10, 38, { airport: true, city: 'New York' });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.data.map((e) => e.provider)).toContain('Uber Shuttle');
@@ -42,8 +42,25 @@ describe('rideshareService provider comparison', () => {
     expect(result.data[0].provider).toBe('Uber Shuttle');
   });
 
+  it('hides Uber Shuttle and Empower where they do not operate', async () => {
+    const denver = await estimateRide(10, 38, { airport: true, city: 'Denver' });
+    expect(denver.ok).toBe(true);
+    if (!denver.ok) return;
+    const providers = denver.data.map((e) => e.provider);
+    expect(providers).not.toContain('Uber Shuttle'); // NYC/CHI/CLT/PIT only
+    expect(providers).not.toContain('Empower'); // DC & Miami only
+    expect(providers).toEqual(expect.arrayContaining(['Uber', 'Lyft', 'Taxi']));
+  });
+
+  it('offers Empower in Miami now that it has launched there', async () => {
+    const result = await estimateRide(5, 20, { city: 'Miami' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.map((e) => e.provider)).toContain('Empower');
+  });
+
   it('prices Empower below UberX', async () => {
-    const result = await estimateRide(5, 20);
+    const result = await estimateRide(5, 20, { city: 'Washington' });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const uber = result.data.find((e) => e.provider === 'Uber');
@@ -53,16 +70,33 @@ describe('rideshareService provider comparison', () => {
 });
 
 describe('accessService first/last-mile options', () => {
-  it('offers transit plus a full rideshare comparison to the station', async () => {
+  it('offers transit plus a rideshare comparison, gated to local providers', async () => {
     const result = await getAccessOptions('nyc-boston', 'to-train', SEARCH);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const titles = result.data.map((o) => o.title);
     expect(titles).toContain('Transit + walk');
-    expect(titles).toEqual(expect.arrayContaining(['Uber', 'Lyft', 'Empower', 'Taxi']));
+    expect(titles).toEqual(expect.arrayContaining(['Uber', 'Lyft', 'Taxi']));
+    // Empower doesn't operate in New York — it must not be offered here.
+    expect(titles).not.toContain('Empower');
     // Exactly one recommended option, and cheapest/fastest are marked.
     expect(result.data.filter((o) => o.badges.includes('recommended'))).toHaveLength(1);
     expect(result.data.some((o) => o.badges.includes('cheapest'))).toBe(true);
+  });
+
+  it('gives the public-transportation option selectable line-by-line paths', async () => {
+    const result = await getAccessOptions('nyc-boston', 'to-airport', SEARCH);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const pt = result.data.find((o) => o.title === 'Public transportation');
+    expect(pt?.pathChoices?.length).toBeGreaterThanOrEqual(2);
+    const titles = pt!.pathChoices!.map((p) => p.title);
+    // Named by their actual lines, Apple Maps-style.
+    expect(titles.join(' ')).toMatch(/Q70|M60/);
+    for (const p of pt!.pathChoices!) {
+      expect(p.legs.length).toBeGreaterThan(0);
+      expect(p.durationMinutes).toBeGreaterThan(0);
+    }
   });
 
   it('recommends a private ride when the traveler has heavy bags', async () => {

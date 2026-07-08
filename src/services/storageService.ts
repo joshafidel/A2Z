@@ -10,6 +10,31 @@ import type { HotelOption, Place, RouteOption, SavedTrip, ServiceResult, TripSea
 
 const KEY = '@a2z/saved-trips';
 const HOME_KEY = '@a2z/home-place';
+const RIDESHARE_KEY = '@a2z/connected-rideshare-apps';
+
+// ---------------------------------------------------------------------------
+// Connected rideshare apps (Settings → ride options only come from these)
+// ---------------------------------------------------------------------------
+
+export const RIDESHARE_APPS = ['Uber', 'Lyft', 'Empower', 'Taxi'] as const;
+
+export async function getConnectedRideshareApps(): Promise<string[]> {
+  try {
+    const raw = await AsyncStorage.getItem(RIDESHARE_KEY);
+    return raw ? (JSON.parse(raw) as string[]) : [...RIDESHARE_APPS];
+  } catch {
+    return [...RIDESHARE_APPS];
+  }
+}
+
+export async function setConnectedRideshareApps(apps: string[]): Promise<boolean> {
+  try {
+    await AsyncStorage.setItem(RIDESHARE_KEY, JSON.stringify(apps));
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Saved home address

@@ -1,8 +1,10 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
+import type { Place } from '../types';
+
 export type PlanStackParamList = {
   Home: undefined;
-  Planner: undefined;
+  Planner: { origin?: Place; destination?: Place } | undefined;
 };
 
 export type RootTabParamList = {

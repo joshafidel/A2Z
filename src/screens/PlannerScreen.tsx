@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -23,6 +24,7 @@ import {
   explainAccessChoice,
   getAccessOptions,
   type AccessOption,
+  type AccessPathChoice,
 } from '../services/accessService';
 import {
   buildBusBookingLink,
@@ -76,9 +78,8 @@ import { formatDuration, formatMoney, formatTime } from '../utils/time';
 // ---------------------------------------------------------------------------
 
 type StepId =
-  | 'destination'
+  | 'places'
   | 'mode'
-  | 'origin'
   | 'stations'
   | 'date'
   | 'tickets'
@@ -148,9 +149,8 @@ function viableModesFor(miles: number | undefined, bothAmtrak: boolean): GroupKe
 }
 
 const STEP_TITLES: Record<StepId, string> = {
-  destination: 'Where are you going?',
+  places: 'Where are you headed?',
   mode: 'How do you want to get there?',
-  origin: 'Where are you coming from?',
   stations: 'Your departure points',
   date: 'When are you leaving?',
   tickets: 'Pick your ticket',
@@ -170,13 +170,13 @@ const TIME_OF_DAY_HOURS: Record<TimeOfDay, number> = { morning: 8, midday: 13, n
 
 // ---------------------------------------------------------------------------
 
-export function PlannerScreen({ navigation }: PlannerScreenProps) {
+export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
   const insets = useSafeAreaInsets();
   const { defaultPreference, setSearchResults, saveTrip } = useTrip();
 
-  // Interview answers ------------------------------------------------------
-  const [origin, setOrigin] = useState<Place>();
-  const [destination, setDestination] = useState<Place>();
+  // Interview answers (from/to may arrive pre-filled from the home page) ----
+  const [origin, setOrigin] = useState<Place | undefined>(route.params?.origin);
+  const [destination, setDestination] = useState<Place | undefined>(route.params?.destination);
   const [needHotel, setNeedHotel] = useState(false);
   const [homePlace, setHomePlace] = useState<Place>();
   const [locating, setLocating] = useState(false);
@@ -218,6 +218,8 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
   const [lastOptions, setLastOptions] = useState<AccessOption[]>();
   const [firstMile, setFirstMile] = useState<AccessOption>();
   const [lastMile, setLastMile] = useState<AccessOption>();
+  const [connectedApps, setConnectedApps] = useState<string[]>(); // Settings → rideshare apps
+  const [expandedPaths, setExpandedPaths] = useState<string>(); // access option with open route list
   const [finalRoute, setFinalRoute] = useState<RouteOption>();
   const [building, setBuilding] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -225,6 +227,14 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
   useEffect(() => {
     storage.getHomePlace().then(setHomePlace);
   }, []);
+
+  // Re-read connected rideshare apps whenever this screen regains focus,
+  // so changes made in Settings apply immediately.
+  useFocusEffect(
+    useCallback(() => {
+      storage.getConnectedRideshareApps().then(setConnectedApps);
+    }, []),
+  );
 
   // Step ordering (dynamic: stations/hotel/access steps are conditional) ----
   const selectedGroupDefs = GROUPS.filter((g) => groups.includes(g.key));
@@ -240,7 +250,7 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
   const isLineHaul = ticket ? true : directRoute ? false : selectedHaulModes.length > 0;
   const hasStationsStep = selectedHaulModes.length > 0;
   const steps: StepId[] = useMemo(() => {
-    const list: StepId[] = ['destination', 'mode', 'origin'];
+    const list: StepId[] = ['places', 'mode'];
     if (hasStationsStep) list.push('stations');
     list.push('date', 'tickets');
     if (needHotel) list.push('hotel');
@@ -249,7 +259,10 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     return list;
   }, [needHotel, isLineHaul, hasStationsStep]);
 
-  const [stepIndex, setStepIndex] = useState(0);
+  // With both places handed in from the home page, start at the mode step.
+  const [stepIndex, setStepIndex] = useState(
+    route.params?.origin && route.params?.destination ? 1 : 0,
+  );
   const step = steps[Math.min(stepIndex, steps.length - 1)];
 
   const goNext = useCallback(() => {
@@ -360,9 +373,9 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, destination, modeViability]);
 
-  // --- Auto-locate: the origin step pre-fills your current address ---------
+  // --- Auto-locate: the places step pre-fills your current address ---------
   useEffect(() => {
-    if (step !== 'origin' || origin || locating) return;
+    if (step !== 'places' || origin || locating) return;
     let cancelled = false;
     setLocating(true);
     getCurrentLocation().then((r) => {
@@ -665,9 +678,8 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
       >
         {stepError ? <ErrorState message={stepError} onRetry={() => setStepError(undefined)} /> : null}
 
-        {step === 'destination' && renderPlaceStep('destination')}
+        {step === 'places' && renderPlacesStep()}
         {step === 'mode' && renderModeStep()}
-        {step === 'origin' && renderPlaceStep('origin')}
         {step === 'stations' && renderStationsStep()}
         {step === 'date' && renderDateStep()}
         {step === 'tickets' && renderTicketStep()}
@@ -706,10 +718,8 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
 
   function stepHasAnswer(s: StepId): boolean {
     switch (s) {
-      case 'origin':
-        return Boolean(origin);
-      case 'destination':
-        return Boolean(destination);
+      case 'places':
+        return Boolean(origin && destination);
       case 'stations':
         return Boolean(stations?.some((n) => n.enabled));
       case 'date':
@@ -729,95 +739,94 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     }
   }
 
-  function renderPlaceStep(which: 'origin' | 'destination') {
-    const current = which === 'origin' ? origin : destination;
-    const setPlace = (p: Place) => {
-      if (which === 'origin') {
-        setOrigin(p);
-        setStations(undefined);
-      } else {
-        setDestination(p);
-        setModeViability(undefined); // distance changed — re-check viable modes
-        setShowOtherModes(false);
-        setStations(undefined);
-      }
+  function renderPlacesStep() {
+    const setFromPlace = (p: Place) => {
+      setOrigin(p);
+      setStations(undefined);
+      setSearch(undefined);
+      resetFromSearch();
+    };
+    const setToPlace = (p: Place) => {
+      setDestination(p);
+      setModeViability(undefined); // distance changed — re-check viable modes
+      setShowOtherModes(false);
+      setStations(undefined);
       setSearch(undefined);
       resetFromSearch();
     };
     return (
       <View style={styles.stepBody}>
-        {which === 'origin' && locating && (
-          <Text style={styles.stepHint}>Finding your current location…</Text>
-        )}
-        {which === 'origin' && !locating && origin?.lat !== undefined && (
-          <Text style={styles.stepHint}>
-            That's your current address — edit it or keep going.
-          </Text>
-        )}
+        <Text style={styles.fieldLabel}>FROM</Text>
         <PlaceInput
-          placeholder={
-            which === 'origin' ? 'Address, station, or airport' : 'Address, hotel, or city'
-          }
-          value={current?.label}
-          autoFocus={which === 'destination' && !current}
-          onSelect={(p) => {
-            setPlace({ address: p.address, label: p.label });
-            // Auto-advance once a real place is chosen.
-            setTimeout(goNext, 150);
-          }}
+          placeholder={locating ? 'Finding your location…' : 'Address, station, or airport'}
+          value={origin?.label}
+          onSelect={(p) => setFromPlace({ address: p.address, label: p.label })}
+        />
+
+        {/* The direction of travel, made obvious */}
+        <View style={styles.arrowRow}>
+          <View style={styles.arrowLine} />
+          <View style={styles.arrowCircle}>
+            <Ionicons name="arrow-down" size={16} color="#FFFFFF" />
+          </View>
+          <View style={styles.arrowLine} />
+        </View>
+
+        <Text style={styles.fieldLabel}>TO</Text>
+        <PlaceInput
+          placeholder="City, address, or hotel"
+          value={destination?.label}
+          autoFocus={!destination}
+          onSelect={(p) => setToPlace({ address: p.address, label: p.label })}
         />
 
         <View style={styles.quickRow}>
           {homePlace && (
             <Chip
-              label={`Home · ${homePlace.label ?? homePlace.address.split(',')[0]}`}
+              label={`From home · ${homePlace.label ?? homePlace.address.split(',')[0]}`}
               icon="home"
-              selected={current?.address === homePlace.address}
-              onPress={() => {
-                setPlace({ ...homePlace, label: 'Home' });
-                setTimeout(goNext, 150);
-              }}
+              selected={origin?.address === homePlace.address}
+              onPress={() => setFromPlace({ ...homePlace, label: 'Home' })}
             />
           )}
-          {which === 'origin' && (
-            <Chip
-              label={locating ? 'Locating…' : 'Use current location'}
-              icon="locate"
-              onPress={async () => {
-                setLocating(true);
-                const r = await getCurrentLocation();
-                setLocating(false);
-                if (r.ok) {
-                  setPlace({ ...r.data, label: r.data.address });
-                } else {
-                  setStepError(r.error);
-                }
-              }}
-            />
-          )}
+          <Chip
+            label={locating ? 'Locating…' : 'From current location'}
+            icon="locate"
+            onPress={async () => {
+              setLocating(true);
+              const r = await getCurrentLocation();
+              setLocating(false);
+              if (r.ok) setFromPlace({ ...r.data, label: r.data.address });
+              else setStepError(r.error);
+            }}
+          />
         </View>
 
-        {which === 'origin' && current && (
-          <AppButton label="Continue from here" icon="arrow-forward" onPress={goNext} />
+        {origin && destination && (
+          <AppButton
+            label={`Plan ${origin.label?.split(',')[0] ?? 'here'} → ${destination.label?.split(',')[0] ?? 'there'}`}
+            icon="arrow-forward"
+            onPress={goNext}
+          />
         )}
 
-        {which === 'origin' && current && current.label !== 'Home' && (
+        {origin && origin.label !== 'Home' && (
           <Pressable
             style={styles.saveHomeRow}
             onPress={async () => {
-              await storage.setHomePlace(current);
-              setHomePlace(current);
+              await storage.setHomePlace(origin);
+              setHomePlace(origin);
             }}
           >
             <Ionicons
-              name={homePlace?.address === current.address ? 'star' : 'star-outline'}
+              name={homePlace?.address === origin.address ? 'star' : 'star-outline'}
               size={16}
               color={colors.warning}
             />
             <Text style={styles.saveHomeText}>
-              {homePlace?.address === current.address
+              {homePlace?.address === origin.address
                 ? 'Saved as your home'
-                : `Save "${current.label}" as home`}
+                : `Save "${origin.label}" as home`}
             </Text>
           </Pressable>
         )}
@@ -1217,30 +1226,15 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
                 {isPending && (
                   <View style={styles.purchasePanel}>
                     <AppButton
-                      label={`Book now on ${bookLink?.provider ?? 'the booking site'}`}
+                      label="Book now"
                       icon="cart"
                       small
                       onPress={() => chooseTicket(t, 'now')}
                     />
                     <Text style={styles.purchaseHint}>
-                      Opens with this exact {t.haul.mode === 'flight' ? 'flight' : t.haul.mode} selected.
+                      Opens {bookLink?.provider ?? 'the booking site'} with this exact{' '}
+                      {t.haul.mode === 'flight' ? 'flight' : t.haul.mode} at the cheapest fare.
                     </Text>
-                    {t.haul.mode === 'flight' && (
-                      <View style={styles.providerGrid}>
-                        {flightProviderLinksFor(t).map((link) => (
-                          <Pressable
-                            key={link.id}
-                            onPress={() => {
-                              openBookingLink(link);
-                              chooseTicket(t, 'now', false);
-                            }}
-                            style={({ pressed }) => [styles.providerButton, pressed && styles.pressed]}
-                          >
-                            <Text style={styles.providerButtonText}>{link.label}</Text>
-                          </Pressable>
-                        ))}
-                      </View>
-                    )}
                     <View style={styles.purchaseRow}>
                       <AppButton
                         label="Buy at the end"
@@ -1468,11 +1462,32 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     const mapsLink = endpoints && mapsTo ? buildGoogleMapsLink(endpoints.from, mapsTo, 'transit') : undefined;
 
     if (!options) return <LoadingState message="Pricing every way to connect…" />;
+
+    // Only rides from apps the traveler has connected in Settings.
+    const visible = options.filter((o) => {
+      if (!o.provider) return true;
+      const app = o.provider === 'Uber Shuttle' ? 'Uber' : o.provider;
+      return !connectedApps || connectedApps.includes(app);
+    });
+
+    const choosePath = (o: AccessOption, p: AccessPathChoice) => {
+      setSelected({
+        ...o,
+        legs: p.legs,
+        durationMinutes: p.durationMinutes,
+        costUsd: p.costUsd,
+        costLabel: p.costUsd === 0 ? 'Free' : `$${p.costUsd.toFixed(2).replace(/\.00$/, '')}`,
+        description: p.legs.map((l) => l.title).join(' → '),
+      });
+      setFinalRoute(undefined);
+      setTimeout(goNext, 100);
+    };
+
     return (
       <View style={styles.stepBody}>
         <Text style={styles.stepHint}>
           {which === 'first' ? `To ${target}` : `From ${ticket?.haul.toStation ?? 'arrival'} to ${target}`} —{' '}
-          {explainAccessChoice(options, wx, search?.bags ?? 0)}
+          {explainAccessChoice(visible, wx, search?.bags ?? 0)}
         </Text>
 
         {/* Custom final destination — someone's house, an office, anywhere */}
@@ -1507,7 +1522,7 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
             )}
           </View>
         )}
-        {options.map((o) => (
+        {visible.map((o) => (
           <Pressable
             key={o.id}
             onPress={() => {
@@ -1541,6 +1556,61 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
                 <Text style={styles.ticketPriceUnit}>{formatDuration(o.durationMinutes)}</Text>
               </View>
             </View>
+
+            {/* Apple Maps-style route choices: pick your exact lines */}
+            {o.pathChoices && o.pathChoices.length > 1 && (
+              <>
+                <Pressable
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    setExpandedPaths((prev) => (prev === o.id ? undefined : o.id));
+                  }}
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded: expandedPaths === o.id }}
+                  style={styles.pathToggle}
+                >
+                  <Ionicons
+                    name={expandedPaths === o.id ? 'chevron-down' : 'chevron-forward'}
+                    size={14}
+                    color={colors.primary}
+                  />
+                  <Text style={styles.pathToggleText}>
+                    {o.pathChoices.length} routes — pick your subway & bus lines
+                  </Text>
+                </Pressable>
+                {expandedPaths === o.id &&
+                  o.pathChoices.map((p) => (
+                    <Pressable
+                      key={p.id}
+                      onPress={(e) => {
+                        e.stopPropagation();
+                        choosePath(o, p);
+                      }}
+                      style={({ pressed }) => [styles.pathRow, pressed && styles.pressed]}
+                    >
+                      <Ionicons
+                        name={selected?.description === p.legs.map((l) => l.title).join(' → ')
+                          ? 'radio-button-on'
+                          : 'radio-button-off'}
+                        size={16}
+                        color={colors.primary}
+                      />
+                      <View style={styles.flex1}>
+                        <Text style={styles.pathTitle}>{p.title}</Text>
+                        <Text style={styles.pathMeta} numberOfLines={2}>
+                          {p.legs.map((l) => l.title).join(' → ')}
+                        </Text>
+                      </View>
+                      <View style={styles.ticketPriceWrap}>
+                        <Text style={styles.pathTime}>{formatDuration(p.durationMinutes)}</Text>
+                        <Text style={styles.ticketPriceUnit}>
+                          {p.costUsd === 0 ? 'Free' : `$${p.costUsd.toFixed(2).replace(/\.00$/, '')}`}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  ))}
+              </>
+            )}
           </Pressable>
         ))}
 
@@ -1839,6 +1909,44 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xs,
   },
   customFinalText: { fontSize: 13, fontWeight: '700', color: colors.primary, flex: 1 },
+  fieldLabel: {
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+    color: colors.textMuted,
+  },
+  arrowRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingVertical: 2 },
+  arrowLine: { flex: 1, height: 1, backgroundColor: colors.border },
+  arrowCircle: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pathToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingTop: spacing.sm,
+    marginTop: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  pathToggleText: { fontSize: 12.5, fontWeight: '700', color: colors.primary, flex: 1 },
+  pathRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+    paddingLeft: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  pathTitle: { fontSize: 13, fontWeight: '700', color: colors.ink },
+  pathMeta: { fontSize: 11.5, color: colors.textSecondary, marginTop: 1, lineHeight: 15 },
+  pathTime: { fontSize: 13, fontWeight: '800', color: colors.ink },
   aiCard: { gap: spacing.sm, borderColor: colors.primary, borderWidth: 1.5 },
   aiHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   aiTitle: { ...typography.heading, color: colors.ink, flex: 1 },

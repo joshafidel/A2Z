@@ -13,15 +13,26 @@
  * mapsService; ride prices from the rideshare provider APIs.
  */
 
+import { findCityCoords } from '../data/airports';
 import type { CorridorKey } from '../data/cities';
 import type { ServiceResult, TransportMode, TripSearch, WeatherCondition } from '../types';
-import { getLiveTransitLegs, getLocalLegs } from './mapsService';
+import { getLiveTransitLegs, getLocalLegs, getTransitPathAlternatives } from './mapsService';
 import type { LocalLeg } from './mapsService';
 import { estimateRide } from './rideshareService';
 
 export interface AccessEndpoints {
   from: string;
   to: string;
+}
+
+/** One selectable transit path — the Apple Maps-style route alternative. */
+export interface AccessPathChoice {
+  id: string;
+  title: string; // "Subway to 74 St + Q70 LaGuardia Link"
+  legs: LocalLeg[];
+  durationMinutes: number;
+  /** Total for the whole party. */
+  costUsd: number;
 }
 
 export interface AccessOption {
@@ -36,6 +47,14 @@ export interface AccessOption {
   description: string;
   badges: Array<'recommended' | 'cheapest' | 'fastest'>;
   provider?: string;
+  /** Alternate transit paths (public-transportation option only). */
+  pathChoices?: AccessPathChoice[];
+}
+
+/** Name a path by its transit lines: "Subway to 74 St + Q70 LaGuardia Link". */
+function pathTitle(legs: LocalLeg[]): string {
+  const lines = legs.filter((l) => l.mode !== 'walk').map((l) => l.title);
+  return lines.length > 0 ? lines.join(' + ') : 'Walk';
 }
 
 /** Straight-line ride stats for each access stretch (mock Directions data). */
@@ -130,12 +149,24 @@ export async function getAccessOptions(
 
   // Public-transportation alternative for stretches whose default is a ride
   // (airport runs get a subway/bus chain too — live Google routing when
-  // a key is configured, curated lines otherwise).
+  // a key is configured, curated lines otherwise). Alternate paths come
+  // along as a dropdown, Apple Maps-style: each names its lines.
   const transitVariant = await getLocalLegs(corridor, `${facet}-transit`);
   if (transitVariant.ok) {
     const tLegs = (isDefaultRide ? live : undefined) ?? transitVariant.data.legs;
     const perPersonCost = tLegs.reduce((a, l) => a + l.costUsd, 0);
     const total = perPersonCost * search.travelers;
+    const buildChoice = (legs: LocalLeg[]): AccessPathChoice => ({
+      id: nextId('path'),
+      title: pathTitle(legs),
+      legs,
+      durationMinutes: legs.reduce((a, l) => a + l.durationMinutes, 0),
+      costUsd: legs.reduce((a, l) => a + l.costUsd, 0) * search.travelers,
+    });
+    const pathChoices = [
+      buildChoice(tLegs),
+      ...getTransitPathAlternatives(corridor, facet).map((alt) => buildChoice(alt.legs)),
+    ];
     options.push({
       id: nextId('acc-pt'),
       title: 'Public transportation',
@@ -146,13 +177,19 @@ export async function getAccessOptions(
       costLabel: total === 0 ? 'Free' : `$${total.toFixed(2).replace(/\.00$/, '')}`,
       description: tLegs.map((l) => l.title).join(' → '),
       badges: [],
+      pathChoices,
     });
   }
 
-  // Rideshare comparison for the same stretch.
+  // Rideshare comparison for the same stretch. The stretch's city gates
+  // city-limited providers (Uber Shuttle, Empower) to where they operate.
   const stats = RIDE_STATS[`${corridor}:${facet}`];
   if (stats) {
-    const rides = await estimateRide(stats.miles, stats.minutes, { airport: stats.airport });
+    const cityAddress = facet.startsWith('to-') ? search.origin.address : search.destination.address;
+    const rides = await estimateRide(stats.miles, stats.minutes, {
+      airport: stats.airport,
+      city: findCityCoords(cityAddress)?.city,
+    });
     if (rides.ok) {
       for (const ride of rides.data) {
         const mid = Math.round((ride.lowUsd + ride.highUsd) / 2);

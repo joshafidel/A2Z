@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
-import React from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Card } from '../components/Card';
@@ -8,13 +8,35 @@ import { Chip } from '../components/Chip';
 import { SectionHeader } from '../components/SectionHeader';
 import { useTrip } from '../context/TripContext';
 import { apiConfig } from '../services/config';
+import * as storage from '../services/storageService';
+import { RIDESHARE_APPS } from '../services/storageService';
 import { colors, spacing, typography } from '../theme';
 import { PREFERENCE_LABELS, type TravelPreference } from '../types';
+
+const RIDESHARE_META: Record<string, { icon: keyof typeof Ionicons.glyphMap; note: string }> = {
+  Uber: { icon: 'car', note: 'UberX + Uber Shuttle where offered' },
+  Lyft: { icon: 'car-sport', note: 'Lyft Standard' },
+  Empower: { icon: 'people', note: 'Driver-set prices · DC & Miami' },
+  Taxi: { icon: 'car-outline', note: 'Metered taxi / Curb' },
+};
 
 /** Settings / preferences: default optimization + integration status. */
 export function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { defaultPreference, setDefaultPreference, savedTrips } = useTrip();
+  const [connectedApps, setConnectedApps] = useState<string[]>([...RIDESHARE_APPS]);
+
+  useEffect(() => {
+    storage.getConnectedRideshareApps().then(setConnectedApps);
+  }, []);
+
+  const toggleApp = (app: string) => {
+    setConnectedApps((prev) => {
+      const next = prev.includes(app) ? prev.filter((a) => a !== app) : [...prev, app];
+      storage.setConnectedRideshareApps(next);
+      return next;
+    });
+  };
 
   const integrations: Array<{ name: string; configured: boolean; note: string }> = [
     { name: 'OpenWeather', configured: Boolean(apiConfig.openWeatherApiKey), note: 'Live forecasts' },
@@ -47,6 +69,42 @@ export function SettingsScreen() {
               onPress={() => setDefaultPreference(p)}
             />
           ))}
+        </View>
+      </Card>
+
+      <Card>
+        <SectionHeader
+          title="Rideshare apps"
+          subtitle="Connect the apps you use — ride options only come from these"
+        />
+        <View style={styles.integrationStack}>
+          {RIDESHARE_APPS.map((app) => {
+            const connected = connectedApps.includes(app);
+            return (
+              <Pressable
+                key={app}
+                onPress={() => toggleApp(app)}
+                accessibilityRole="switch"
+                accessibilityState={{ checked: connected }}
+                style={styles.integrationRow}
+              >
+                <Ionicons
+                  name={RIDESHARE_META[app]?.icon ?? 'car'}
+                  size={18}
+                  color={connected ? colors.primary : colors.textMuted}
+                />
+                <View style={styles.flex}>
+                  <Text style={styles.integrationName}>{app}</Text>
+                  <Text style={styles.integrationNote}>{RIDESHARE_META[app]?.note}</Text>
+                </View>
+                <Ionicons
+                  name={connected ? 'checkmark-circle' : 'ellipse-outline'}
+                  size={22}
+                  color={connected ? colors.success : colors.textMuted}
+                />
+              </Pressable>
+            );
+          })}
         </View>
       </Card>
 
