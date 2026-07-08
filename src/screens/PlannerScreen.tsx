@@ -32,9 +32,19 @@ import {
 } from '../services/deepLinkService';
 import { aiConfigured, generateConciergePlan } from '../services/aiService';
 import { openBookingLink } from '../components/BookingLinks';
-import { CORRIDOR_CITIES } from '../data/cities';
-import { airportsNear, busTerminalFor, findCityCoords, nearestCity, trainStationFor } from '../data/airports';
+import { CORRIDOR_CITIES, resolveCorridor } from '../data/cities';
+import {
+  airportsNear,
+  busTerminalFor,
+  findCityCoords,
+  haversineMiles,
+  nearestCity,
+  trainStationFor,
+} from '../data/airports';
 import { resolveCityCoords } from '../services/geoService';
+import { searchFlights } from '../services/flightService';
+import { searchTrains } from '../services/trainService';
+import { searchBuses } from '../services/busService';
 import { getCurrentLocation } from '../services/locationService';
 import { getHotelRecommendations } from '../services/hotelService';
 import { detectCityKey } from '../data/cities';
@@ -85,9 +95,30 @@ interface StationNode {
   code?: string; // IATA for airports
   miles?: number;
   enabled: boolean;
+  /** Departure stats from this node: option count, fares, typical time. */
+  stats?: {
+    count: number;
+    minFare?: number;
+    maxFare?: number;
+    avgFare?: number;
+    avgMinutes: number;
+  };
 }
 
-type GroupKey = 'flights' | 'trains' | 'buses' | 'cars' | 'transit';
+function statsFromHauls(hauls: Array<{ farePerPersonUsd?: number; durationMinutes: number }>) {
+  if (hauls.length === 0) return undefined;
+  const fares = hauls.map((h) => h.farePerPersonUsd).filter((f): f is number => f !== undefined);
+  const avg = (xs: number[]) => Math.round(xs.reduce((a, b) => a + b, 0) / xs.length);
+  return {
+    count: hauls.length,
+    minFare: fares.length > 0 ? Math.min(...fares) : undefined,
+    maxFare: fares.length > 0 ? Math.max(...fares) : undefined,
+    avgFare: fares.length > 0 ? avg(fares) : undefined,
+    avgMinutes: avg(hauls.map((h) => h.durationMinutes)),
+  };
+}
+
+type GroupKey = 'flights' | 'trains' | 'buses' | 'cars';
 
 const GROUPS: Array<{
   key: GroupKey;
@@ -99,14 +130,22 @@ const GROUPS: Array<{
   { key: 'flights', title: 'Fly', icon: 'airplane', lineHaulMode: 'flight', match: (r) => r.primaryMode === 'flight' },
   { key: 'trains', title: 'Train', icon: 'train', lineHaulMode: 'train', match: (r) => r.primaryMode === 'train' },
   { key: 'buses', title: 'Bus', icon: 'bus', lineHaulMode: 'bus', match: (r) => r.primaryMode === 'bus' },
-  { key: 'cars', title: 'Car / rental', icon: 'car', match: (r) => r.primaryMode === 'drive' || r.primaryMode === 'rideshare' },
-  {
-    key: 'transit',
-    title: 'Public transit',
-    icon: 'subway',
-    match: (r) => !['flight', 'train', 'bus', 'drive', 'rideshare'].includes(r.primaryMode),
-  },
+  { key: 'cars', title: 'Rental Car', icon: 'car', match: (r) => r.primaryMode === 'drive' || r.primaryMode === 'rideshare' },
 ];
+
+/**
+ * Which modes make real-world sense for a given trip distance. NY → Florida
+ * is a flight; NY → Boston is anything. Unknown distance → everything shows.
+ */
+function viableModesFor(miles: number | undefined, bothAmtrak: boolean): GroupKey[] {
+  if (miles === undefined) return GROUPS.map((g) => g.key);
+  const viable: GroupKey[] = [];
+  if (miles >= 75) viable.push('flights');
+  if (bothAmtrak && miles >= 30 && miles <= 500) viable.push('trains');
+  if (miles >= 25 && miles <= 400) viable.push('buses');
+  if (miles <= 600) viable.push('cars');
+  return viable.length > 0 ? viable : GROUPS.map((g) => g.key);
+}
 
 const STEP_TITLES: Record<StepId, string> = {
   destination: 'Where are you going?',
@@ -152,7 +191,10 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
   const [results, setResults] = useState<TripSearchResults>();
   const [searching, setSearching] = useState(false);
   const [groups, setGroups] = useState<GroupKey[]>([]); // multi-select travel modes
+  const [modeViability, setModeViability] = useState<{ miles?: number; bothAmtrak: boolean }>();
+  const [showOtherModes, setShowOtherModes] = useState(false);
   const [stations, setStations] = useState<StationNode[]>(); // toggleable departure nodes
+  const [hiddenModes, setHiddenModes] = useState<Array<'flight' | 'train' | 'bus'>>([]); // ticket-board filter
   const [ticketBoards, setTicketBoards] = useState<Partial<Record<GroupKey, TicketOption[]>>>({});
   const [ticket, setTicket] = useState<TicketOption>();
   const [ticketSort, setTicketSort] = useState<'recommended' | 'price' | 'time'>('recommended');
@@ -230,6 +272,7 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     setPendingTicket(undefined);
     setPurchaseIntent(undefined);
     setTicketSort('recommended');
+    setHiddenModes([]);
     setDirectRoute(undefined);
     setFirstOptions(undefined);
     setLastOptions(undefined);
@@ -289,6 +332,34 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
     );
   }, [results]);
 
+  // --- Mode viability: which ways of traveling make sense for THIS trip ----
+  // The likely origin (chosen origin > saved home > current location) and the
+  // destination give a real distance; absurd modes get tucked behind a toggle.
+  useEffect(() => {
+    if (step !== 'mode' || !destination || modeViability) return;
+    let cancelled = false;
+    (async () => {
+      let o = origin ?? homePlace;
+      if (!o) {
+        const r = await getCurrentLocation();
+        if (r.ok) o = r.data;
+      }
+      const [from, to] = await Promise.all([
+        o ? resolveCityCoords(o.address) : Promise.resolve(undefined),
+        resolveCityCoords(destination.address),
+      ]);
+      if (cancelled) return;
+      setModeViability({
+        miles: from && to ? haversineMiles(from, to) : undefined,
+        bothAmtrak: Boolean(from?.amtrak && to?.amtrak),
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, destination, modeViability]);
+
   // --- Auto-locate: the origin step pre-fills your current address ---------
   useEffect(() => {
     if (step !== 'origin' || origin || locating) return;
@@ -346,11 +417,38 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
       if (groups.includes('buses')) {
         nodes.push({ id: 'bus-main', kind: 'bus', name: busTerminalFor(city), enabled: true });
       }
+      // Pull the departures behind each node so the cards show how many
+      // options exist, the fare range, and the typical travel time.
+      if (destination) {
+        const corridor = resolveCorridor(
+          detectCityKey(origin.address),
+          detectCityKey(destination.address),
+        );
+        const addresses = { originAddress: origin.address, destAddress: destination.address };
+        const [flights, trains, buses] = await Promise.all([
+          groups.includes('flights') ? searchFlights(corridor, addresses) : undefined,
+          groups.includes('trains') ? searchTrains(corridor, addresses) : undefined,
+          groups.includes('buses') ? searchBuses(corridor, addresses) : undefined,
+        ]);
+        if (cancelled) return;
+        for (const n of nodes) {
+          if (n.kind === 'flight' && flights?.ok) {
+            n.stats = statsFromHauls(
+              flights.data.filter((f) => f.fromStation.match(/\(([A-Z]{3})\)/)?.[1] === n.code),
+            );
+          } else if (n.kind === 'train' && trains?.ok) {
+            n.stats = statsFromHauls(trains.data);
+          } else if (n.kind === 'bus' && buses?.ok) {
+            n.stats = statsFromHauls(buses.data);
+          }
+        }
+      }
       setStations(nodes);
     })();
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, origin, groups, stations]);
 
   // --- Ticket boards for EVERY selected mode, in parallel -------------------
@@ -637,7 +735,12 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
       if (which === 'origin') {
         setOrigin(p);
         setStations(undefined);
-      } else setDestination(p);
+      } else {
+        setDestination(p);
+        setModeViability(undefined); // distance changed — re-check viable modes
+        setShowOtherModes(false);
+        setStations(undefined);
+      }
       setSearch(undefined);
       resetFromSearch();
     };
@@ -805,43 +908,76 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
   }
 
   function renderModeStep() {
+    if (!modeViability) {
+      return <LoadingState message="Checking which ways make sense for this trip…" />;
+    }
+    const viableKeys = viableModesFor(modeViability.miles, modeViability.bothAmtrak);
+    const viable = GROUPS.filter((g) => viableKeys.includes(g.key));
+    const others = GROUPS.filter((g) => !viableKeys.includes(g.key));
+
     const toggleGroup = (key: GroupKey) => {
       setGroups((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
       setStations(undefined);
       setTicketBoards({});
       resetFromMode();
     };
+    const renderModeCard = (g: (typeof GROUPS)[number]) => {
+      const checked = groups.includes(g.key);
+      return (
+        <Pressable
+          key={g.key}
+          onPress={() => toggleGroup(g.key)}
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked }}
+          style={({ pressed }) => [
+            styles.modeCard,
+            checked && styles.modeCardSelected,
+            pressed && styles.pressed,
+          ]}
+        >
+          <View style={styles.modeHeader}>
+            <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
+              {checked && <Ionicons name="checkmark" size={15} color="#FFFFFF" />}
+            </View>
+            <View style={styles.modeIconCircle}>
+              <Ionicons name={g.icon} size={20} color={colors.primary} />
+            </View>
+            <Text style={styles.modeTitle}>{g.title}</Text>
+          </View>
+        </Pressable>
+      );
+    };
     return (
       <View style={styles.stepBody}>
         <Text style={styles.stepHint}>
-          Check every way you'd consider — we'll pull real departures for all of them.
+          {modeViability.miles !== undefined
+            ? `About ${modeViability.miles} miles away — these are the ways that make sense. Check every one you'd consider.`
+            : "Check every way you'd consider — we'll pull real departures for all of them."}
         </Text>
-        {GROUPS.map((g) => {
-          const checked = groups.includes(g.key);
-          return (
+        {viable.map(renderModeCard)}
+
+        {others.length > 0 && (
+          <>
             <Pressable
-              key={g.key}
-              onPress={() => toggleGroup(g.key)}
-              accessibilityRole="checkbox"
-              accessibilityState={{ checked }}
-              style={({ pressed }) => [
-                styles.modeCard,
-                checked && styles.modeCardSelected,
-                pressed && styles.pressed,
-              ]}
+              onPress={() => setShowOtherModes((v) => !v)}
+              style={({ pressed }) => [styles.otherModesToggle, pressed && styles.pressed]}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: showOtherModes }}
             >
-              <View style={styles.modeHeader}>
-                <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
-                  {checked && <Ionicons name="checkmark" size={15} color="#FFFFFF" />}
-                </View>
-                <View style={styles.modeIconCircle}>
-                  <Ionicons name={g.icon} size={20} color={colors.primary} />
-                </View>
-                <Text style={styles.modeTitle}>{g.title}</Text>
-              </View>
+              <Ionicons
+                name={showOtherModes ? 'chevron-down' : 'chevron-forward'}
+                size={16}
+                color={colors.textSecondary}
+              />
+              <Text style={styles.otherModesText}>
+                {others.length} more way{others.length === 1 ? '' : 's'} to travel (
+                {others.map((g) => g.title).join(', ')}) — not ideal for this distance
+              </Text>
             </Pressable>
-          );
-        })}
+            {showOtherModes && others.map(renderModeCard)}
+          </>
+        )}
+
         <AppButton
           label={groups.length > 0 ? 'Continue' : 'Pick at least one'}
           icon="arrow-forward"
@@ -898,6 +1034,20 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
               </View>
               <View style={styles.flex1}>
                 <Text style={styles.ticketTimes}>{n.name}</Text>
+                {n.stats && (
+                  <Text style={styles.ticketMeta}>
+                    {n.stats.count} option{n.stats.count === 1 ? '' : 's'}
+                    {n.stats.minFare !== undefined && n.stats.maxFare !== undefined
+                      ? ` · ${formatMoney(n.stats.minFare)}–${formatMoney(n.stats.maxFare)}${
+                          n.stats.avgFare !== undefined ? ` (avg ${formatMoney(n.stats.avgFare)})` : ''
+                        }`
+                      : ''}
+                    {` · ~${formatDuration(n.stats.avgMinutes)}`}
+                  </Text>
+                )}
+                {!n.stats && (
+                  <Text style={styles.ticketMeta}>No direct departures found from here</Text>
+                )}
                 <Text style={styles.ticketMeta}>
                   {n.miles !== undefined ? `${n.miles} mi away · ` : ''}
                   {n.enabled ? 'Included in your ticket search' : 'Turned off — no tickets from here'}
@@ -949,7 +1099,13 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
       return <LoadingState message="Pulling departures from every mode you picked…" />;
     }
 
-    const merged = haulGroups.flatMap((g) => (ticketBoards[g.key] ?? []).filter(stationAllows));
+    const allTickets = haulGroups.flatMap((g) => (ticketBoards[g.key] ?? []).filter(stationAllows));
+    const presentModes = (['flight', 'train', 'bus'] as const).filter((m) =>
+      allTickets.some((t) => t.haul.mode === m),
+    );
+    const merged = allTickets.filter(
+      (t) => !hiddenModes.includes(t.haul.mode as 'flight' | 'train' | 'bus'),
+    );
     const sorted = [...merged].sort((a, b) => {
       if (ticketSort === 'price') {
         return (a.farePerPersonUsd ?? Infinity) - (b.farePerPersonUsd ?? Infinity);
@@ -964,7 +1120,7 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
 
     const directOptions = directGroups.flatMap((g) => grouped.find((x) => x.key === g.key)?.routes ?? []);
 
-    if (sorted.length === 0 && directOptions.length === 0) {
+    if (allTickets.length === 0 && directOptions.length === 0) {
       return (
         <View style={styles.stepBody}>
           <Text style={styles.stepHint}>
@@ -975,14 +1131,46 @@ export function PlannerScreen({ navigation }: PlannerScreenProps) {
       );
     }
 
-    const ticketList = sorted.length > 0 && (
+    const MODE_FILTER_META: Record<'flight' | 'train' | 'bus', { label: string; icon: keyof typeof Ionicons.glyphMap }> = {
+      flight: { label: 'Flights', icon: 'airplane' },
+      train: { label: 'Trains', icon: 'train' },
+      bus: { label: 'Buses', icon: 'bus' },
+    };
+    const filterRow = presentModes.length > 1 && (
+      <View style={styles.sortRow}>
+        <Text style={styles.sortLabel}>SHOW</Text>
+        {presentModes.map((m) => (
+          <Chip
+            key={m}
+            label={MODE_FILTER_META[m].label}
+            icon={MODE_FILTER_META[m].icon}
+            selected={!hiddenModes.includes(m)}
+            onPress={() =>
+              setHiddenModes((prev) =>
+                prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m],
+              )
+            }
+          />
+        ))}
+      </View>
+    );
+
+    const ticketList = (
         <>
+          {filterRow}
+          {sorted.length === 0 && allTickets.length > 0 && (
+            <Text style={styles.stepHint}>
+              Every mode is hidden — tap a filter above to bring tickets back.
+            </Text>
+          )}
+          {sorted.length > 0 && (
           <View style={styles.sortRow}>
             <Text style={styles.sortLabel}>SORT BY</Text>
             <Chip label="Recommended" selected={ticketSort === 'recommended'} onPress={() => setTicketSort('recommended')} />
             <Chip label="Price" selected={ticketSort === 'price'} onPress={() => setTicketSort('price')} />
             <Chip label="Time of day" selected={ticketSort === 'time'} onPress={() => setTicketSort('time')} />
           </View>
+          )}
           {sorted.map((t) => {
             const isPending = pendingTicket?.haul.id === t.haul.id;
             const bookLink = exactBookingLinkFor(t);
