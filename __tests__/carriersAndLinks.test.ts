@@ -169,7 +169,8 @@ describe('booking links', () => {
       ]),
     );
     const google = links.find((l) => l.provider === 'Google Flights');
-    expect(decodeURIComponent(google!.webUrl)).toContain('DL 1232');
+    // Fully qualified so the site opens with THIS exact flight selected.
+    expect(decodeURIComponent(google!.webUrl)).toContain('DL 1232 from JFK to MIA on 2026-07-11');
     const kayak = links.find((l) => l.provider === 'Kayak');
     expect(kayak!.webUrl).toContain('JFK-MIA/2026-07-11');
   });

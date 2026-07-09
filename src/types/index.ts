@@ -329,7 +329,8 @@ export type HotelTag =
   | 'airport'
   | 'transit'
   | 'beach'
-  | 'downtown';
+  | 'downtown'
+  | 'luxury';
 
 /** Where the traveler wants to stay — the first hotel question. */
 export type HotelArea = 'airport' | 'beach' | 'attraction' | 'downtown' | 'custom';

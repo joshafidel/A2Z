@@ -48,7 +48,7 @@ import { searchFlights } from '../services/flightService';
 import { searchTrains } from '../services/trainService';
 import { searchBuses } from '../services/busService';
 import { getCurrentLocation } from '../services/locationService';
-import { getHotelRecommendations } from '../services/hotelService';
+import { getHotelRecommendations, hotelAreasFor } from '../services/hotelService';
 import { detectCityKey } from '../data/cities';
 import * as storage from '../services/storageService';
 import {
@@ -168,6 +168,15 @@ const TIME_ICONS: Record<TimeOfDay, keyof typeof Ionicons.glyphMap> = {
 
 const TIME_OF_DAY_HOURS: Record<TimeOfDay, number> = { morning: 8, midday: 13, night: 19 };
 
+/** Light line colors (MTA yellow, etc.) need dark badge text to stay readable. */
+function isLightColor(hex?: string): boolean {
+  if (!hex || hex.length < 7) return false;
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return 0.299 * r + 0.587 * g + 0.114 * b > 160;
+}
+
 // ---------------------------------------------------------------------------
 
 export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
@@ -206,6 +215,7 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
   const [hotelArea, setHotelArea] = useState<HotelArea>();
   const [customArea, setCustomArea] = useState('');
   const [hotelPriceSort, setHotelPriceSort] = useState(false);
+  const [hotelLuxury, setHotelLuxury] = useState(false);
   const [hotels, setHotels] = useState<HotelOption[]>();
   const [hotel, setHotel] = useState<HotelOption>();
   const [hotelDecided, setHotelDecided] = useState(false);
@@ -501,6 +511,7 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
         area: hotelArea,
         customArea,
         sortByPrice: hotelPriceSort,
+        luxury: hotelLuxury,
         checkinIso: search.departureTime,
         nights: 1,
       });
@@ -510,7 +521,7 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, search, purpose, ticket, hotelArea, customArea, hotelPriceSort, needHotel]);
+  }, [step, search, purpose, ticket, hotelArea, customArea, hotelPriceSort, hotelLuxury, needHotel]);
 
   // --- Access options (prefetched in parallel from the ticket step on) ------
   useEffect(() => {
@@ -1315,11 +1326,15 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
   }
 
   function renderHotelStep() {
+    // Area choices adapt to the destination — no beach option in Kansas City.
+    const areas = search
+      ? hotelAreasFor(detectCityKey(search.destination.address), search.destination.address)
+      : (Object.keys(HOTEL_AREA_LABELS) as HotelArea[]);
     const areaSelector = (
       <>
         <Text style={styles.subLabel}>WHERE DO YOU WANT TO BE?</Text>
         <View style={styles.quickRow}>
-          {(Object.keys(HOTEL_AREA_LABELS) as HotelArea[]).map((a) => (
+          {areas.map((a) => (
             <Chip
               key={a}
               label={HOTEL_AREA_LABELS[a]}
@@ -1330,6 +1345,15 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
               }}
             />
           ))}
+          <Chip
+            label="Luxury"
+            icon="diamond"
+            selected={hotelLuxury}
+            onPress={() => {
+              setHotelLuxury((v) => !v);
+              setHotels(undefined);
+            }}
+          />
           <Chip
             label="Sort by price instead"
             icon="pricetag"
@@ -1579,36 +1603,76 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
                   </Text>
                 </Pressable>
                 {expandedPaths === o.id &&
-                  o.pathChoices.map((p) => (
-                    <Pressable
-                      key={p.id}
-                      onPress={(e) => {
-                        e.stopPropagation();
-                        choosePath(o, p);
-                      }}
-                      style={({ pressed }) => [styles.pathRow, pressed && styles.pressed]}
-                    >
-                      <Ionicons
-                        name={selected?.description === p.legs.map((l) => l.title).join(' → ')
-                          ? 'radio-button-on'
-                          : 'radio-button-off'}
-                        size={16}
-                        color={colors.primary}
-                      />
-                      <View style={styles.flex1}>
-                        <Text style={styles.pathTitle}>{p.title}</Text>
-                        <Text style={styles.pathMeta} numberOfLines={2}>
-                          {p.legs.map((l) => l.title).join(' → ')}
-                        </Text>
-                      </View>
-                      <View style={styles.ticketPriceWrap}>
-                        <Text style={styles.pathTime}>{formatDuration(p.durationMinutes)}</Text>
-                        <Text style={styles.ticketPriceUnit}>
-                          {p.costUsd === 0 ? 'Free' : `$${p.costUsd.toFixed(2).replace(/\.00$/, '')}`}
-                        </Text>
-                      </View>
-                    </Pressable>
-                  ))}
+                  o.pathChoices.map((p) => {
+                    const walkMin = p.legs
+                      .filter((l) => l.mode === 'walk')
+                      .reduce((a, l) => a + l.durationMinutes, 0);
+                    const headway = p.legs.find((l) => l.headwayMinutes)?.headwayMinutes;
+                    const metaParts = [
+                      p.departIso && p.arriveIso
+                        ? `${formatTime(p.departIso)} – ${formatTime(p.arriveIso)}`
+                        : undefined,
+                      p.costUsd > 0 ? `$${p.costUsd.toFixed(2).replace(/\.00$/, '')}` : undefined,
+                      walkMin > 0 ? `${walkMin} min walking` : undefined,
+                      headway ? `every ${headway} min` : undefined,
+                    ].filter(Boolean);
+                    return (
+                      <Pressable
+                        key={p.id}
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          choosePath(o, p);
+                        }}
+                        style={({ pressed }) => [styles.pathRow, pressed && styles.pressed]}
+                      >
+                        <View style={styles.flex1}>
+                          {/* Line badges, Google/Apple Maps-style */}
+                          <View style={styles.badgeRow}>
+                            {p.legs.map((l, i) => (
+                              <React.Fragment key={`${p.id}-${i}`}>
+                                {i > 0 && (
+                                  <Ionicons
+                                    name="chevron-forward"
+                                    size={10}
+                                    color={colors.textMuted}
+                                  />
+                                )}
+                                {l.mode === 'walk' ? (
+                                  <Ionicons name="walk" size={14} color={colors.textSecondary} />
+                                ) : l.lineName ? (
+                                  <View
+                                    style={[
+                                      styles.lineBadge,
+                                      { backgroundColor: l.lineColor ?? colors.primary },
+                                    ]}
+                                  >
+                                    <Text
+                                      style={[
+                                        styles.lineBadgeText,
+                                        isLightColor(l.lineColor) && styles.lineBadgeTextDark,
+                                      ]}
+                                    >
+                                      {l.lineName}
+                                    </Text>
+                                  </View>
+                                ) : (
+                                  <Ionicons name="bus" size={14} color={colors.textSecondary} />
+                                )}
+                              </React.Fragment>
+                            ))}
+                          </View>
+                          <Text style={styles.pathMeta} numberOfLines={2}>
+                            {metaParts.length > 0
+                              ? metaParts.join(' · ')
+                              : p.legs.map((l) => l.title).join(' → ')}
+                          </Text>
+                        </View>
+                        <View style={styles.ticketPriceWrap}>
+                          <Text style={styles.pathTime}>{formatDuration(p.durationMinutes)}</Text>
+                        </View>
+                      </Pressable>
+                    );
+                  })}
               </>
             )}
           </Pressable>
@@ -1945,8 +2009,18 @@ const styles = StyleSheet.create({
     borderTopColor: colors.border,
   },
   pathTitle: { fontSize: 13, fontWeight: '700', color: colors.ink },
-  pathMeta: { fontSize: 11.5, color: colors.textSecondary, marginTop: 1, lineHeight: 15 },
+  pathMeta: { fontSize: 11.5, color: colors.textSecondary, marginTop: 3, lineHeight: 15 },
   pathTime: { fontSize: 13, fontWeight: '800', color: colors.ink },
+  lineBadge: {
+    minWidth: 22,
+    height: 20,
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  lineBadgeText: { fontSize: 11, fontWeight: '900', color: '#FFFFFF' },
+  lineBadgeTextDark: { color: '#1A1A2E' },
   aiCard: { gap: spacing.sm, borderColor: colors.primary, borderWidth: 1.5 },
   aiHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   aiTitle: { ...typography.heading, color: colors.ink, flex: 1 },

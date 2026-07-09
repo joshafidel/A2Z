@@ -18,7 +18,7 @@ import { findCityCoords } from '../data/airports';
 import type { CityKey } from '../data/cities';
 import type { HotelArea, HotelOption, HotelTag, ServiceResult, TripPurpose } from '../types';
 import { mockDelay } from './config';
-import { buildHotelSearchLink } from './deepLinkService';
+import { buildExactHotelLink } from './deepLinkService';
 
 type HotelSeed = Omit<HotelOption, 'bookingUrl' | 'whyRecommended'> & { searchQuery: string };
 
@@ -48,7 +48,7 @@ const HOTELS: Record<string, HotelSeed[]> = {
       distanceLabel: '5 min from the BCEC convention center',
       nearAirport: false,
       perks: ['Harbor views', 'Breakfast included'],
-      tags: ['convention', 'business', 'attractions'],
+      tags: ['convention', 'business', 'attractions', 'luxury'],
       searchQuery: 'Seaport Boston hotel',
     },
     {
@@ -167,7 +167,7 @@ const HOTELS: Record<string, HotelSeed[]> = {
       distanceLabel: 'On the C&O Canal · M Street shopping outside',
       nearAirport: false,
       perks: ['Boutique rooms', 'Bikes included'],
-      tags: ['attractions'],
+      tags: ['attractions', 'luxury'],
       searchQuery: 'Georgetown Washington DC hotel',
     },
     {
@@ -195,7 +195,7 @@ const HOTELS: Record<string, HotelSeed[]> = {
       distanceLabel: 'Steps from the sand on Ocean Drive',
       nearAirport: false,
       perks: ['Beachfront', 'Pool', 'Rooftop bar'],
-      tags: ['beach', 'attractions'],
+      tags: ['beach', 'attractions', 'luxury'],
       searchQuery: 'South Beach Miami hotel',
     },
     {
@@ -314,7 +314,7 @@ const HOTELS: Record<string, HotelSeed[]> = {
       distanceLabel: 'Walk to SoHo shopping, Little Italy & the subway',
       nearAirport: false,
       perks: ['Boutique rooms', 'Rooftop terrace'],
-      tags: ['attractions', 'downtown'],
+      tags: ['attractions', 'downtown', 'luxury'],
       searchQuery: 'SoHo New York hotel',
     },
     {
@@ -371,6 +371,19 @@ const HOTELS: Record<string, HotelSeed[]> = {
       tags: ['airport'],
       searchQuery: 'Orlando airport hotel',
     },
+    {
+      id: 'orl-4',
+      name: 'Grande Cypress Resort & Spa',
+      area: 'Lake Buena Vista',
+      pricePerNightUsd: 289,
+      rating: 4.8,
+      reviewCount: 3120,
+      distanceLabel: 'Golf, spa & lagoon pool · minutes from the parks',
+      nearAirport: false,
+      perks: ['Full-service spa', 'Golf course', 'Cabanas'],
+      tags: ['attractions', 'family', 'luxury'],
+      searchQuery: 'Lake Buena Vista Orlando luxury resort',
+    },
   ],
   la: [
     {
@@ -383,7 +396,7 @@ const HOTELS: Record<string, HotelSeed[]> = {
       distanceLabel: 'Two blocks from the beach & the pier',
       nearAirport: false,
       perks: ['Beachfront', 'Pool', 'Bike rentals'],
-      tags: ['beach', 'attractions'],
+      tags: ['beach', 'attractions', 'luxury'],
       searchQuery: 'Santa Monica beach hotel',
     },
     {
@@ -466,6 +479,19 @@ const HOTELS: Record<string, HotelSeed[]> = {
       tags: ['airport', 'transit'],
       searchQuery: "O'Hare airport hotel",
     },
+    {
+      id: 'chi-4',
+      name: 'The Lakeshore Grand',
+      area: 'Magnificent Mile',
+      pricePerNightUsd: 315,
+      rating: 4.8,
+      reviewCount: 2890,
+      distanceLabel: 'On Michigan Ave · lake-view suites',
+      nearAirport: false,
+      perks: ['Spa', 'Rooftop lounge', 'Lake views'],
+      tags: ['downtown', 'attractions', 'luxury'],
+      searchQuery: 'Magnificent Mile Chicago luxury hotel',
+    },
   ],
   vegas: [
     {
@@ -506,6 +532,19 @@ const HOTELS: Record<string, HotelSeed[]> = {
       perks: ['Free airport shuttle', '24h check-in'],
       tags: ['airport'],
       searchQuery: 'Las Vegas airport hotel',
+    },
+    {
+      id: 'lv-4',
+      name: 'Fontaine Sky Palace',
+      area: 'The Strip (North)',
+      pricePerNightUsd: 339,
+      rating: 4.8,
+      reviewCount: 4560,
+      distanceLabel: 'Five-star tower · pool club & fine dining',
+      nearAirport: false,
+      perks: ['Five-star suites', 'Pool club', 'Spa'],
+      tags: ['attractions', 'luxury'],
+      searchQuery: 'Las Vegas Strip five star hotel',
     },
   ],
 };
@@ -576,6 +615,19 @@ const GENERIC_HOTELS: HotelSeed[] = [
     tags: ['downtown', 'transit'],
     searchQuery: 'budget hotel downtown',
   },
+  {
+    id: 'gen-6',
+    name: 'The Grand Marquee',
+    area: 'City center',
+    pricePerNightUsd: 310,
+    rating: 4.8,
+    reviewCount: 1980,
+    distanceLabel: 'The city\'s flagship five-star stay',
+    nearAirport: false,
+    perks: ['Five-star service', 'Spa', 'Fine dining'],
+    tags: ['downtown', 'luxury'],
+    searchQuery: 'five star luxury hotel',
+  },
 ];
 
 /** Which tags each purpose favors, plus the copy explaining the match. */
@@ -644,6 +696,34 @@ function resolveHotelGroup(cityKey: CityKey, destinationQuery?: string): HotelSe
   return undefined;
 }
 
+/** Cities where "close to the beach" is a real option. */
+const BEACH_CITIES = [
+  'Miami',
+  'Fort Lauderdale',
+  'Tampa',
+  'Jacksonville',
+  'Fort Myers',
+  'Los Angeles',
+  'San Diego',
+];
+
+/**
+ * Which stay-area choices make sense for THIS destination — Kansas City
+ * doesn't get a beach option. Beach shows when the city's hotel inventory
+ * has beachfront stays or the city is on the coast.
+ */
+export function hotelAreasFor(cityKey: CityKey, destinationQuery?: string): HotelArea[] {
+  const seeds = resolveHotelGroup(cityKey, destinationQuery);
+  const city = destinationQuery ? findCityCoords(destinationQuery)?.city : undefined;
+  const hasBeach =
+    (seeds?.some((s) => s.tags.includes('beach')) ?? false) ||
+    (city !== undefined && BEACH_CITIES.includes(city));
+  const areas: HotelArea[] = ['airport'];
+  if (hasBeach) areas.push('beach');
+  areas.push('attraction', 'downtown', 'custom');
+  return areas;
+}
+
 export interface HotelSearchOptions {
   arrivingByAir?: boolean;
   destinationQuery?: string;
@@ -654,6 +734,8 @@ export interface HotelSearchOptions {
   customArea?: string;
   /** Sort by price (cheapest first) instead of best match. */
   sortByPrice?: boolean;
+  /** Only show luxury stays (five-star / top-of-market). */
+  luxury?: boolean;
   /** Trip date → real check-in/check-out on the booking links. */
   checkinIso?: string;
   nights?: number;
@@ -672,11 +754,20 @@ export async function getHotelRecommendations(
       searchQuery: opts.destinationQuery ?? h.searchQuery,
     }));
 
+  // Luxury filter: keep tagged five-star stays, falling back to the
+  // top-of-market price band so no city dead-ends.
+  let pool = seeds;
+  if (opts.luxury) {
+    const lux = pool.filter((s) => s.tags.includes('luxury'));
+    pool = lux.length > 0 ? lux : pool.filter((s) => s.pricePerNightUsd >= 200);
+    if (pool.length === 0) pool = seeds;
+  }
+
   const purposeFit = opts.purpose ? PURPOSE_FIT[opts.purpose] : undefined;
   const areaFit = opts.area && opts.area !== 'custom' ? AREA_FIT[opts.area] : undefined;
   const customQuery = opts.area === 'custom' ? opts.customArea?.trim() : undefined;
 
-  const scored = seeds.map((seed) => {
+  const scored = pool.map((seed) => {
     let score = seed.rating; // base: quality
     let why: string | undefined;
 
@@ -707,14 +798,15 @@ export async function getHotelRecommendations(
       why = 'Close to the airport for your arrival.';
     }
 
-    // Custom entries also refine the Booking.com search itself.
-    const searchQuery = customQuery
-      ? `${customQuery} ${opts.destinationQuery ?? seed.searchQuery}`
-      : seed.searchQuery;
-
     const hotel: HotelOption = {
       ...seed,
-      bookingUrl: buildHotelSearchLink(searchQuery, opts.checkinIso, opts.nights ?? 1),
+      // "Book now" opens Booking.com with THIS exact hotel + real dates.
+      bookingUrl: buildExactHotelLink(
+        seed.name,
+        opts.destinationQuery ?? seed.searchQuery,
+        opts.checkinIso,
+        opts.nights ?? 1,
+      ),
       whyRecommended: why,
     };
     return { hotel, score };

@@ -13,7 +13,8 @@
 
 import type { CorridorKey } from '../data/cities';
 import type { ServiceResult, TransportMode } from '../types';
-import { apiConfig, fetchWithTimeout, isLive, mockDelay } from './config';
+import { apiConfig, fetchWithTimeout, isLive, liveDataEnabled, mockDelay } from './config';
+import { geocode } from './geoService';
 
 export interface LocalLeg {
   mode: Extract<TransportMode, 'walk' | 'drive' | 'transit' | 'airport-transfer'>;
@@ -25,6 +26,12 @@ export interface LocalLeg {
   costUsd: number; // per person for transit; total for drive (fuel+tolls)
   provider?: string;
   notes?: string[];
+  /** Line badge, Google/Apple Maps-style: "6", "F", "M15", "Q70". */
+  lineName?: string;
+  /** Official line color for the badge (hex). */
+  lineColor?: string;
+  /** Service frequency — "every 6 min". */
+  headwayMinutes?: number;
 }
 
 export interface LocalAccess {
@@ -61,9 +68,11 @@ export async function getLiveTransitLegs(
             html_instructions?: string;
             transit_details?: {
               headsign?: string;
+              headway?: number; // seconds between departures
               line: {
                 short_name?: string;
                 name?: string;
+                color?: string;
                 agencies?: Array<{ name: string }>;
                 vehicle?: { name?: string; type?: string };
               };
@@ -98,6 +107,11 @@ export async function getLiveTransitLegs(
             distanceMiles: miles,
             costUsd: cost,
             provider: line.agencies?.[0]?.name,
+            lineName: lineName || undefined,
+            lineColor: line.color,
+            headwayMinutes: s.transit_details.headway
+              ? Math.round(s.transit_details.headway / 60)
+              : undefined,
             notes: ['Live route via Google Maps'],
           };
         }
@@ -113,6 +127,109 @@ export async function getLiveTransitLegs(
         };
       });
     return legs.length > 0 ? legs : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** One real transit itinerary (Transitous/MOTIS or Google). */
+export interface TransitPath {
+  title: string;
+  legs: LocalLeg[];
+  departIso?: string;
+  arriveIso?: string;
+}
+
+/** GTFS route colors sometimes arrive without the leading '#'. */
+function hexColor(c?: string): string | undefined {
+  if (!c) return undefined;
+  return c.startsWith('#') ? c : `#${c}`;
+}
+
+function toIso(t?: string | number): string | undefined {
+  if (t === undefined) return undefined;
+  const d = typeof t === 'number' ? new Date(t) : new Date(t);
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+}
+
+/**
+ * REAL keyless transit routing via Transitous (transitous.org) — a free,
+ * community-run MOTIS instance routing on worldwide public GTFS feeds.
+ * Returns up to three alternate itineraries with real clock times, line
+ * names, and official line colors. No API key, no scraping; fails soft so
+ * callers keep their curated paths when unreachable.
+ */
+export async function getTransitousPaths(
+  fromAddress: string,
+  toAddress: string,
+): Promise<TransitPath[] | undefined> {
+  if (!liveDataEnabled()) return undefined;
+  try {
+    const [from, to] = await Promise.all([geocode(fromAddress), geocode(toAddress)]);
+    if (!from.ok || !to.ok) return undefined;
+    const res = await fetchWithTimeout(
+      `https://api.transitous.org/api/v1/plan?fromPlace=${from.data.lat},${from.data.lng}` +
+        `&toPlace=${to.data.lat},${to.data.lng}&numItineraries=3`,
+      6000,
+      { headers: { Accept: 'application/json' } },
+    );
+    if (!res.ok) return undefined;
+    const body = (await res.json()) as {
+      itineraries?: Array<{
+        startTime?: string | number;
+        endTime?: string | number;
+        legs?: Array<{
+          mode?: string;
+          from?: { name?: string };
+          to?: { name?: string };
+          duration?: number; // seconds
+          distance?: number; // meters
+          startTime?: string | number;
+          endTime?: string | number;
+          routeShortName?: string;
+          routeColor?: string;
+          headsign?: string;
+          agencyName?: string;
+        }>;
+      }>;
+    };
+    const itineraries = body.itineraries?.slice(0, 3);
+    if (!itineraries || itineraries.length === 0) return undefined;
+
+    const paths = itineraries
+      .map((it): TransitPath | undefined => {
+        const legs: LocalLeg[] = (it.legs ?? []).map((l) => {
+          const isWalk = (l.mode ?? 'WALK').toUpperCase() === 'WALK';
+          const minutes = Math.max(1, Math.round((l.duration ?? 60) / 60));
+          const miles = Math.round(((l.distance ?? 0) / 1609.34) * 10) / 10;
+          const line = l.routeShortName;
+          return {
+            mode: isWalk ? ('walk' as const) : ('transit' as const),
+            title: isWalk
+              ? `Walk to ${l.to?.name ?? 'the stop'}`
+              : `${line ?? 'Transit'}${l.headsign ? ` toward ${l.headsign}` : ''}`,
+            from: l.from?.name ?? fromAddress,
+            to: l.to?.name ?? toAddress,
+            durationMinutes: minutes,
+            distanceMiles: miles,
+            costUsd: 0, // GTFS feeds rarely publish fares — shown as live route
+            provider: l.agencyName,
+            lineName: isWalk ? undefined : line,
+            lineColor: isWalk ? undefined : hexColor(l.routeColor),
+            notes: ['Live route via Transitous (GTFS)'],
+          };
+        });
+        if (legs.length === 0 || !legs.some((l) => l.mode === 'transit')) return undefined;
+        const lines = legs.filter((l) => l.mode === 'transit').map((l) => l.lineName ?? l.title);
+        return {
+          title: lines.join(' + '),
+          legs,
+          departIso: toIso(it.startTime),
+          arriveIso: toIso(it.endTime),
+        };
+      })
+      .filter((p): p is TransitPath => Boolean(p));
+    return paths.length > 0 ? paths : undefined;
   } catch {
     return undefined;
   }
@@ -290,6 +407,9 @@ const ACCESS: Record<string, LocalLeg[]> = {
       distanceMiles: 4.5,
       costUsd: 2.65,
       provider: 'WMATA',
+      lineName: 'BL',
+      lineColor: '#0076BF',
+      headwayMinutes: 10,
     },
     {
       mode: 'walk',
@@ -470,6 +590,9 @@ const ACCESS: Record<string, LocalLeg[]> = {
       distanceMiles: 3.8,
       costUsd: 0,
       provider: 'MBTA',
+      lineName: 'SL1',
+      lineColor: '#7C878E',
+      headwayMinutes: 12,
       notes: ['Free from the airport'],
     },
     {
@@ -538,6 +661,9 @@ const ACCESS: Record<string, LocalLeg[]> = {
       distanceMiles: 8,
       costUsd: 2.9,
       provider: 'MTA',
+      lineName: 'E',
+      lineColor: '#0039A6',
+      headwayMinutes: 6,
     },
     {
       mode: 'airport-transfer',
@@ -548,6 +674,9 @@ const ACCESS: Record<string, LocalLeg[]> = {
       distanceMiles: 2.4,
       costUsd: 0,
       provider: 'MTA',
+      lineName: 'Q70',
+      lineColor: '#2850AD',
+      headwayMinutes: 10,
       notes: ['Free airport bus'],
     },
   ],
@@ -561,6 +690,9 @@ const ACCESS: Record<string, LocalLeg[]> = {
       distanceMiles: 3.8,
       costUsd: 0,
       provider: 'MBTA',
+      lineName: 'SL1',
+      lineColor: '#7C878E',
+      headwayMinutes: 12,
       notes: ['Free from the airport'],
     },
     {
@@ -583,6 +715,9 @@ const ACCESS: Record<string, LocalLeg[]> = {
       distanceMiles: 8,
       costUsd: 2.9,
       provider: 'MTA',
+      lineName: 'E',
+      lineColor: '#0039A6',
+      headwayMinutes: 6,
     },
     {
       mode: 'airport-transfer',
@@ -593,6 +728,9 @@ const ACCESS: Record<string, LocalLeg[]> = {
       distanceMiles: 2.4,
       costUsd: 0,
       provider: 'MTA',
+      lineName: 'Q70',
+      lineColor: '#2850AD',
+      headwayMinutes: 10,
     },
   ],
   'nyc-dc:from-airport-transit': [
@@ -605,6 +743,9 @@ const ACCESS: Record<string, LocalLeg[]> = {
       distanceMiles: 4.5,
       costUsd: 2.65,
       provider: 'WMATA',
+      lineName: 'BL',
+      lineColor: '#0076BF',
+      headwayMinutes: 10,
     },
     {
       mode: 'walk',
@@ -792,6 +933,9 @@ const TRANSIT_ALTS: Record<string, Array<{ title: string; legs: LocalLeg[] }>> =
           distanceMiles: 2.6,
           costUsd: 2.9,
           provider: 'MTA',
+          lineName: '1',
+          lineColor: '#EE352E',
+          headwayMinutes: 5,
         },
         {
           mode: 'airport-transfer',
@@ -802,6 +946,9 @@ const TRANSIT_ALTS: Record<string, Array<{ title: string; legs: LocalLeg[] }>> =
           distanceMiles: 6.8,
           costUsd: 0,
           provider: 'MTA',
+          lineName: 'M60',
+          lineColor: '#2850AD',
+          headwayMinutes: 12,
           notes: ['Free transfer from the subway'],
         },
       ],
@@ -830,6 +977,9 @@ const TRANSIT_ALTS: Record<string, Array<{ title: string; legs: LocalLeg[] }>> =
           distanceMiles: 2.6,
           costUsd: 2.4,
           provider: 'MBTA',
+          lineName: 'BL',
+          lineColor: '#003DA5',
+          headwayMinutes: 9,
         },
         {
           mode: 'walk',
@@ -856,6 +1006,9 @@ const TRANSIT_ALTS: Record<string, Array<{ title: string; legs: LocalLeg[] }>> =
           distanceMiles: 4.2,
           costUsd: 2.65,
           provider: 'WMATA',
+          lineName: 'YL',
+          lineColor: '#FFD100',
+          headwayMinutes: 10,
         },
         {
           mode: 'walk',

@@ -16,7 +16,12 @@
 import { findCityCoords } from '../data/airports';
 import type { CorridorKey } from '../data/cities';
 import type { ServiceResult, TransportMode, TripSearch, WeatherCondition } from '../types';
-import { getLiveTransitLegs, getLocalLegs, getTransitPathAlternatives } from './mapsService';
+import {
+  getLiveTransitLegs,
+  getLocalLegs,
+  getTransitousPaths,
+  getTransitPathAlternatives,
+} from './mapsService';
 import type { LocalLeg } from './mapsService';
 import { estimateRide } from './rideshareService';
 
@@ -28,11 +33,14 @@ export interface AccessEndpoints {
 /** One selectable transit path — the Apple Maps-style route alternative. */
 export interface AccessPathChoice {
   id: string;
-  title: string; // "Subway to 74 St + Q70 LaGuardia Link"
+  title: string; // "Subway to 74 St + Q70 LaGuardia Link", "6 + F"
   legs: LocalLeg[];
   durationMinutes: number;
   /** Total for the whole party. */
   costUsd: number;
+  /** Real clock times when the path came from live GTFS routing. */
+  departIso?: string;
+  arriveIso?: string;
 }
 
 export interface AccessOption {
@@ -151,22 +159,41 @@ export async function getAccessOptions(
   // (airport runs get a subway/bus chain too — live Google routing when
   // a key is configured, curated lines otherwise). Alternate paths come
   // along as a dropdown, Apple Maps-style: each names its lines.
+  // The city on this stretch's end (origin for to-, destination for from-)
+  // powers named-line alternates and rideshare coverage checks.
+  const cityAddress = facet.startsWith('to-') ? search.origin.address : search.destination.address;
+  const stretchCity = findCityCoords(cityAddress)?.city;
+
   const transitVariant = await getLocalLegs(corridor, `${facet}-transit`);
   if (transitVariant.ok) {
     const tLegs = (isDefaultRide ? live : undefined) ?? transitVariant.data.legs;
     const perPersonCost = tLegs.reduce((a, l) => a + l.costUsd, 0);
     const total = perPersonCost * search.travelers;
-    const buildChoice = (legs: LocalLeg[]): AccessPathChoice => ({
+    const buildChoice = (
+      legs: LocalLeg[],
+      times?: { departIso?: string; arriveIso?: string },
+    ): AccessPathChoice => ({
       id: nextId('path'),
       title: pathTitle(legs),
       legs,
       durationMinutes: legs.reduce((a, l) => a + l.durationMinutes, 0),
       costUsd: legs.reduce((a, l) => a + l.costUsd, 0) * search.travelers,
+      departIso: times?.departIso,
+      arriveIso: times?.arriveIso,
     });
-    const pathChoices = [
-      buildChoice(tLegs),
-      ...getTransitPathAlternatives(corridor, facet).map((alt) => buildChoice(alt.legs)),
-    ];
+    // REAL routes first: Transitous (keyless GTFS routing — real lines and
+    // real clock times, like the Google/Apple Maps route list); curated
+    // named-line paths otherwise.
+    const livePaths = await getTransitousPaths(endpoints.from, endpoints.to);
+    const pathChoices =
+      livePaths && livePaths.length > 0
+        ? livePaths.map((p) =>
+            buildChoice(p.legs, { departIso: p.departIso, arriveIso: p.arriveIso }),
+          )
+        : [
+            buildChoice(tLegs),
+            ...getTransitPathAlternatives(corridor, facet).map((alt) => buildChoice(alt.legs)),
+          ];
     options.push({
       id: nextId('acc-pt'),
       title: 'Public transportation',
@@ -185,10 +212,9 @@ export async function getAccessOptions(
   // city-limited providers (Uber Shuttle, Empower) to where they operate.
   const stats = RIDE_STATS[`${corridor}:${facet}`];
   if (stats) {
-    const cityAddress = facet.startsWith('to-') ? search.origin.address : search.destination.address;
     const rides = await estimateRide(stats.miles, stats.minutes, {
       airport: stats.airport,
-      city: findCityCoords(cityAddress)?.city,
+      city: stretchCity,
     });
     if (rides.ok) {
       for (const ride of rides.data) {

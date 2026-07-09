@@ -5,7 +5,7 @@
  */
 
 import { getAccessOptions } from '../src/services/accessService';
-import { getHotelRecommendations } from '../src/services/hotelService';
+import { getHotelRecommendations, hotelAreasFor } from '../src/services/hotelService';
 import { estimateRide } from '../src/services/rideshareService';
 import { rebuildRouteWithAccess, searchRoutes } from '../src/services/tripService';
 import type { TripSearch } from '../src/types';
@@ -161,5 +161,50 @@ describe('hotelService', () => {
     if (!result.ok) return;
     expect(result.data.length).toBeGreaterThan(0);
     expect(result.data[0].bookingUrl).toContain('Tulsa');
+  });
+
+  it('books the EXACT hotel: the booking link carries the hotel name + dates', async () => {
+    const result = await getHotelRecommendations('boston', {
+      destinationQuery: 'Boston, MA',
+      checkinIso: '2026-07-25T12:00:00.000Z',
+      nights: 2,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const url = decodeURIComponent(result.data[0].bookingUrl);
+    expect(url).toContain(result.data[0].name); // this exact property
+    expect(url).toContain('checkin=2026-07-25');
+    expect(url).toContain('checkout=2026-07-27');
+  });
+
+  it('offers a beach area only where a beach exists', () => {
+    expect(hotelAreasFor('unknown', 'Miami, FL')).toContain('beach');
+    expect(hotelAreasFor('unknown', 'Kansas City, MO')).not.toContain('beach');
+    expect(hotelAreasFor('boston', 'Boston, MA')).not.toContain('beach');
+    // Everyone keeps the core choices.
+    expect(hotelAreasFor('unknown', 'Kansas City, MO')).toEqual(
+      expect.arrayContaining(['airport', 'attraction', 'downtown', 'custom']),
+    );
+  });
+
+  it('filters to luxury stays, with a five-star fallback anywhere', async () => {
+    const miami = await getHotelRecommendations('unknown', {
+      destinationQuery: 'Miami, FL',
+      luxury: true,
+    });
+    expect(miami.ok).toBe(true);
+    if (!miami.ok) return;
+    expect(miami.data.every((h) => h.tags.includes('luxury'))).toBe(true);
+    expect(miami.data.map((h) => h.name)).toContain('South Beach Shorehouse');
+
+    // Unknown city → the generic five-star stay keeps the filter alive.
+    const tulsa = await getHotelRecommendations('unknown', {
+      destinationQuery: 'Tulsa, OK',
+      luxury: true,
+    });
+    expect(tulsa.ok).toBe(true);
+    if (!tulsa.ok) return;
+    expect(tulsa.data.length).toBeGreaterThan(0);
+    expect(tulsa.data.every((h) => h.tags.includes('luxury'))).toBe(true);
   });
 });

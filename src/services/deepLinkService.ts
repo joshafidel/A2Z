@@ -224,7 +224,9 @@ export function buildFlightProviderLinks(
       icon: 'airplane',
       webUrl: `https://www.google.com/travel/flights?q=${enc(
         flightNumber
-          ? `${flightNumber} on ${isoDay}` // exact flight the user selected
+          ? // The exact flight the user selected, fully qualified so Google
+            // resolves straight to that leg with booking prices compared.
+            `${flightNumber} from ${originCode} to ${destCode} on ${isoDay}`
           : `Flights from ${originCode} to ${destCode} on ${isoDay}`,
       )}`,
     },
@@ -326,6 +328,20 @@ export function buildHotelSearchLink(city: string, checkinIso?: string, nights =
   const checkin = new Date(checkinIso);
   const checkout = new Date(checkin.getTime() + nights * 86_400_000);
   return `${base}&checkin=${checkin.toISOString().slice(0, 10)}&checkout=${checkout.toISOString().slice(0, 10)}`;
+}
+
+/**
+ * Booking handoff for ONE exact hotel: Booking.com searched by the hotel's
+ * own name (plus city, so the right property tops the results) with the real
+ * check-in/check-out dates — mirrors the exact-flight Book now behavior.
+ */
+export function buildExactHotelLink(
+  hotelName: string,
+  city: string,
+  checkinIso?: string,
+  nights = 1,
+): string {
+  return buildHotelSearchLink(`${hotelName}, ${city}`, checkinIso, nights);
 }
 
 export function buildTransitAppLink(origin: string, destination: string): BookingLink {
