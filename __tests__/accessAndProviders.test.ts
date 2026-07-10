@@ -59,6 +59,16 @@ describe('rideshareService provider comparison', () => {
     expect(result.data.map((e) => e.provider)).toContain('Empower');
   });
 
+  it('prices rides by the city cost level — the same trip costs less in Miami than NYC', async () => {
+    const nyc = await estimateRide(8, 30, { city: 'New York' });
+    const miami = await estimateRide(8, 30, { city: 'Miami' });
+    expect(nyc.ok && miami.ok).toBe(true);
+    if (!nyc.ok || !miami.ok) return;
+    const nycUber = nyc.data.find((e) => e.provider === 'Uber')!;
+    const miamiUber = miami.data.find((e) => e.provider === 'Uber')!;
+    expect(miamiUber.lowUsd).toBeLessThan(nycUber.lowUsd);
+  });
+
   it('prices Empower below UberX', async () => {
     const result = await estimateRide(5, 20, { city: 'Washington' });
     expect(result.ok).toBe(true);

@@ -18,6 +18,7 @@ import type { CorridorKey } from '../data/cities';
 import type { ServiceResult, TransportMode, TripSearch, WeatherCondition } from '../types';
 import {
   getLiveTransitLegs,
+  getLiveTransitPaths,
   getLocalLegs,
   getTransitousPaths,
   getTransitPathAlternatives,
@@ -181,10 +182,12 @@ export async function getAccessOptions(
       departIso: times?.departIso,
       arriveIso: times?.arriveIso,
     });
-    // REAL routes first: Transitous (keyless GTFS routing — real lines and
-    // real clock times, like the Google/Apple Maps route list); curated
-    // named-line paths otherwise.
-    const livePaths = await getTransitousPaths(endpoints.from, endpoints.to);
+    // REAL routes first: Google Directions alternatives when a key is
+    // configured (the exact route list Google Maps shows), then Transitous
+    // (keyless GTFS routing), then curated named-line paths.
+    const livePaths =
+      (await getLiveTransitPaths(endpoints.from, endpoints.to)) ??
+      (await getTransitousPaths(endpoints.from, endpoints.to));
     const pathChoices =
       livePaths && livePaths.length > 0
         ? livePaths.map((p) =>

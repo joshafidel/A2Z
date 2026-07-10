@@ -116,9 +116,23 @@ A2Z/
 | Train/bus fares | No public fare APIs exist (and scraping Amtrak/FlixBus violates their terms) | Calibrated estimates, clearly labeled |
 | Booking | Real provider sites opened with your route + date pre-filled: Google Flights, Wanderu (live Amtrak/bus fares), Kayak (rentals), Booking.com (hotels with check-in/out) | **Live** |
 | Trip reminders | Browser Notification API (expo-notifications hook point for native) | Works while the site is open |
-| AI Concierge | **Anthropic Claude** (`claude-opus-4-8`) via `EXPO_PUBLIC_ANTHROPIC_API_KEY`; deterministic local curation without a key | Live once you add a key |
+| AI Concierge + AI fare estimates | **Anthropic Claude** (`claude-opus-4-8`) via `EXPO_PUBLIC_ANTHROPIC_API_KEY`; deterministic local curation without a key | Live once you add a key |
+| Transit routes (which subway/bus, alternates, clock times) | **Google Directions** (`alternatives=true`) with a key; **Transitous** (keyless GTFS routing) otherwise; curated named-line paths as final fallback | Live with key / keyless best-effort |
+| Rideshare prices | City-indexed calibrated model; **Claude** recalibrates to today's real UberX band when the Anthropic key is set; Uber/Lyft price APIs hook point remains | Better estimates by default; AI-refined with key |
+| Flight status (delays, cancellations, gates) | **aviationstack** via `EXPO_PUBLIC_AVIATIONSTACK_API_KEY` — My Trip banner + browser notification | Live once you add a key |
+| TSA security lines | **TSA Wait Times API** via `EXPO_PUBLIC_TSA_WAIT_API_KEY` — feeds arrival & leave-home advice + My Trip card | Live once you add a key; per-airport/hour estimates otherwise |
 
 Every live call fails fast into the mock layer, so the app always works — offline, in CI, or if a free API has an outage. Set `EXPO_PUBLIC_LIVE_DATA=off` to force deterministic mock mode.
+
+### Enabling every real-time source
+
+1. Copy `.env.example` to `.env`, set `EXPO_PUBLIC_API_MODE=live`, then add keys:
+2. **Google Maps** (`EXPO_PUBLIC_GOOGLE_MAPS_API_KEY`): Google Cloud Console → enable *Directions API* → create key. Unlocks accurate transit routes with alternates, real fares, headways, and clock times.
+3. **Anthropic** (`EXPO_PUBLIC_ANTHROPIC_API_KEY`): console.anthropic.com. Unlocks the AI concierge and AI-refined rideshare price bands. Ship via a backend proxy in production.
+4. **aviationstack** (`EXPO_PUBLIC_AVIATIONSTACK_API_KEY`): aviationstack.com free plan (100 req/mo, HTTP-only — HTTPS needs a paid tier when hosted on Vercel).
+5. **TSA Wait Times** (`EXPO_PUBLIC_TSA_WAIT_API_KEY`): request a free key at tsawaittimes.com/api.
+6. **Amadeus** (`EXPO_PUBLIC_AMADEUS_CLIENT_ID/SECRET`): developers.amadeus.com self-service. Unlocks live flight fares.
+7. On Vercel, add the same variables in *Project → Settings → Environment Variables* and redeploy (Expo inlines `EXPO_PUBLIC_*` at build time).
 
 ## Architecture notes
 

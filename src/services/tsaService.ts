@@ -1,16 +1,16 @@
 /**
  * TSA wait-time / airport intelligence service.
  *
- * MOCK: typical wait profiles per airport and hour of day.
- *
- * REAL API: the MyTSA API exposes historical waits; several airports
- * publish live queue times (e.g. via TSA.gov or airport open-data feeds).
- * Replace `getTsaEstimate` internals; the AirportIntel builder stays as-is.
+ * REAL API: the TSA Wait Times API (tsawaittimes.com — free key) supplies
+ * the security line RIGHT NOW; when EXPO_PUBLIC_TSA_WAIT_API_KEY is set,
+ * every arrival/leave-home recommendation below uses the live number.
+ * Without a key, calibrated per-airport, per-hour profiles are used and
+ * labeled as estimates.
  */
 
 import type { AirportIntel, ServiceResult } from '../types';
 import { addMinutes, formatTime } from '../utils/time';
-import { mockDelay } from './config';
+import { apiConfig, fetchWithTimeout, isLive, mockDelay } from './config';
 
 interface AirportProfile {
   name: string;
@@ -41,10 +41,53 @@ function profileFor(airportCode: string): AirportProfile {
   );
 }
 
+export interface TsaWaitNow {
+  airportCode: string;
+  waitMinutes: number;
+  live: boolean;
+  label: string; // "Security at JFK: ~35 min right now (live)"
+}
+
+const liveWaitCache = new Map<string, { at: number; value: TsaWaitNow | undefined }>();
+const LIVE_TTL_MS = 10 * 60_000;
+
+/** The security line RIGHT NOW — live when a TSA Wait Times key is set. */
+export async function getTsaWaitNow(airportCode: string): Promise<TsaWaitNow | undefined> {
+  if (!isLive('tsaWaitApiKey')) return undefined;
+  const cached = liveWaitCache.get(airportCode);
+  if (cached && Date.now() - cached.at < LIVE_TTL_MS) return cached.value;
+  try {
+    const res = await fetchWithTimeout(
+      `https://www.tsawaittimes.com/api/airport/${apiConfig.tsaWaitApiKey}/${airportCode}/json`,
+      5000,
+    );
+    if (!res.ok) throw new Error(`TSA API ${res.status}`);
+    const body = (await res.json()) as { rightnow?: number };
+    if (typeof body.rightnow !== 'number' || body.rightnow < 0) throw new Error('no data');
+    const value: TsaWaitNow = {
+      airportCode,
+      waitMinutes: Math.round(body.rightnow),
+      live: true,
+      label: `Security at ${airportCode}: ~${Math.round(body.rightnow)} min right now (live)`,
+    };
+    liveWaitCache.set(airportCode, { at: Date.now(), value });
+    return value;
+  } catch {
+    liveWaitCache.set(airportCode, { at: Date.now(), value: undefined });
+    return undefined;
+  }
+}
+
 export async function getTsaEstimate(
   airportCode: string,
   departureIso: string,
-): Promise<ServiceResult<{ min: number; max: number }>> {
+): Promise<ServiceResult<{ min: number; max: number; live?: boolean }>> {
+  // Live line length first — the whole leave-home chain then uses reality.
+  const now = await getTsaWaitNow(airportCode);
+  if (now) {
+    return { ok: true, data: { min: now.waitMinutes, max: now.waitMinutes + 10, live: true } };
+  }
+
   await mockDelay(80);
 
   const profile = profileFor(airportCode);

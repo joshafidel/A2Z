@@ -30,7 +30,9 @@ import {
   buildBusBookingLink,
   buildFlightProviderLinks,
   buildGoogleMapsLink,
+  buildLyftLink,
   buildTicketPurchaseLink,
+  buildUberLink,
 } from '../services/deepLinkService';
 import { aiConfigured, generateConciergePlan } from '../services/aiService';
 import { openBookingLink } from '../components/BookingLinks';
@@ -1580,6 +1582,28 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
                 <Text style={styles.ticketPriceUnit}>{formatDuration(o.durationMinutes)}</Text>
               </View>
             </View>
+
+            {/* One-tap handoff: opens the ride app with pickup & drop-off filled */}
+            {(o.provider === 'Uber' || o.provider === 'Uber Shuttle' || o.provider === 'Lyft') &&
+              endpoints && (
+                <Pressable
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    const from = endpoints.from;
+                    const to = mapsTo ?? endpoints.to;
+                    openBookingLink(
+                      o.provider === 'Lyft' ? buildLyftLink(from, to) : buildUberLink(from, to),
+                    );
+                  }}
+                  style={styles.pathToggle}
+                >
+                  <Ionicons name="open-outline" size={14} color={colors.primary} />
+                  <Text style={styles.pathToggleText}>
+                    Schedule in {o.provider === 'Lyft' ? 'Lyft' : 'Uber'} — pickup & drop-off
+                    already filled
+                  </Text>
+                </Pressable>
+              )}
 
             {/* Apple Maps-style route choices: pick your exact lines */}
             {o.pathChoices && o.pathChoices.length > 1 && (

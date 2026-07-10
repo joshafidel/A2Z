@@ -78,6 +78,58 @@ async function generateWithClaude(input: ConciergeInput): Promise<string> {
   return text;
 }
 
+// ---------------------------------------------------------------------------
+// AI fare estimation — better rideshare cost approximations.
+// One small Claude call per (city, distance bucket), cached for the session.
+// ---------------------------------------------------------------------------
+
+const fareCache = new Map<string, { low: number; high: number } | null>();
+
+/**
+ * Ask Claude for today's typical UberX price band for a ride in a given
+ * city. Used by rideshareService to calibrate ALL provider estimates when
+ * an Anthropic key is configured; returns undefined otherwise/on failure.
+ */
+export async function aiUberFareBand(
+  city: string,
+  miles: number,
+  minutes: number,
+): Promise<{ low: number; high: number } | undefined> {
+  if (!aiConfigured()) return undefined;
+  const key = `${city}|${Math.round(miles)}`;
+  const cached = fareCache.get(key);
+  if (cached !== undefined) return cached ?? undefined;
+  try {
+    const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+    const response = await client.messages.create({
+      model: 'claude-opus-4-8',
+      max_tokens: 100,
+      output_config: { effort: 'low' },
+      system:
+        'You estimate rideshare prices. Reply with ONLY a JSON object {"low":N,"high":N} — the typical UberX total price range in USD for the described ride. No other text.',
+      messages: [
+        {
+          role: 'user',
+          content: `UberX in ${city}: ${Math.round(miles)} miles, about ${Math.round(minutes)} minutes, normal demand.`,
+        },
+      ],
+    });
+    const text = response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
+    const parsed = JSON.parse(text.match(/\{[^}]+\}/)?.[0] ?? '') as { low: number; high: number };
+    if (typeof parsed.low !== 'number' || typeof parsed.high !== 'number' || parsed.low <= 0) {
+      throw new Error('bad shape');
+    }
+    fareCache.set(key, parsed);
+    return parsed;
+  } catch {
+    fareCache.set(key, null);
+    return undefined;
+  }
+}
+
 /** Deterministic fallback so the concierge works without an API key. */
 function generateLocally(input: ConciergeInput): string {
   const { search, route, hotel } = input;

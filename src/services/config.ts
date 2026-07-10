@@ -33,6 +33,10 @@ export const apiConfig = {
   transitlandApiKey: process.env.EXPO_PUBLIC_TRANSITLAND_API_KEY ?? '',
   uberServerToken: process.env.EXPO_PUBLIC_UBER_SERVER_TOKEN ?? '',
   lyftClientId: process.env.EXPO_PUBLIC_LYFT_CLIENT_ID ?? '',
+  /** Real-time flight status (aviationstack.com). */
+  aviationstackApiKey: process.env.EXPO_PUBLIC_AVIATIONSTACK_API_KEY ?? '',
+  /** Real-time TSA security-line waits (tsawaittimes.com). */
+  tsaWaitApiKey: process.env.EXPO_PUBLIC_TSA_WAIT_API_KEY ?? '',
 } as const;
 
 /** True when a given integration should use its live API. */

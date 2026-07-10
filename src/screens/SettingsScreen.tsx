@@ -45,6 +45,8 @@ export function SettingsScreen() {
     { name: 'Rome2Rio', configured: Boolean(apiConfig.rome2RioApiKey), note: 'Multimodal routing' },
     { name: 'Transitland', configured: Boolean(apiConfig.transitlandApiKey), note: 'GTFS transit feeds' },
     { name: 'Uber / Lyft', configured: Boolean(apiConfig.uberServerToken || apiConfig.lyftClientId), note: 'Live ride pricing' },
+    { name: 'aviationstack', configured: Boolean(apiConfig.aviationstackApiKey), note: 'Real-time flight status alerts' },
+    { name: 'TSA Wait Times', configured: Boolean(apiConfig.tsaWaitApiKey), note: 'Live security lines → leave-by advice' },
   ];
 
   return (

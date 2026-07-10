@@ -20,6 +20,8 @@ import {
   scheduleTripReminders,
   type TripReminder,
 } from '../services/notificationService';
+import { getFlightStatus, notifyFlightUpdate, type FlightStatus } from '../services/flightStatusService';
+import { getTsaWaitNow, type TsaWaitNow } from '../services/tsaService';
 import { colors, radii, spacing, typography } from '../theme';
 import type { SavedTrip, TimelineStep } from '../types';
 import { formatCountdown, formatDate, formatDuration, formatMoney, formatTime } from '../utils/time';
@@ -75,6 +77,40 @@ export function DashboardScreen() {
       activeTrip.route.timeline[activeTrip.route.timeline.length - 1]
     );
   }, [activeTrip, now]);
+
+  // Real-time flight status + TSA line for the active trip's flight leg.
+  // Polls every 5 min while the tab is open; notifies on important updates.
+  const [flightStatus, setFlightStatus] = useState<FlightStatus>();
+  const [tsaNow, setTsaNow] = useState<TsaWaitNow>();
+  const flightSeg = activeTrip?.route.segments.find((s) => s.mode === 'flight');
+  const flightNo = flightSeg?.vehicleId;
+  const airportCode = flightSeg?.from.match(/\(([A-Z]{3})\)/)?.[1];
+  useEffect(() => {
+    if (!flightNo && !airportCode) return;
+    let cancelled = false;
+    let lastHeadline: string | undefined;
+    const poll = async () => {
+      const [status, tsa] = await Promise.all([
+        flightNo ? getFlightStatus(flightNo) : undefined,
+        airportCode ? getTsaWaitNow(airportCode) : undefined,
+      ]);
+      if (cancelled) return;
+      if (status) {
+        setFlightStatus(status);
+        if (status.important && status.headline !== lastHeadline) {
+          lastHeadline = status.headline;
+          notifyFlightUpdate(status); // browser notification, once per change
+        }
+      }
+      if (tsa) setTsaNow(tsa);
+    };
+    poll();
+    const t = setInterval(poll, 5 * 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [flightNo, airportCode]);
 
   if (!activeTrip) {
     return (
@@ -143,6 +179,45 @@ export function DashboardScreen() {
           </View>
         )}
       </View>
+
+      {/* Real-time flight status — delays, cancellations, gate changes */}
+      {flightStatus && (
+        <Card
+          style={[
+            styles.statusCard,
+            flightStatus.important ? styles.statusCardAlert : styles.statusCardOk,
+          ]}
+        >
+          <Ionicons
+            name={flightStatus.important ? 'warning' : 'checkmark-circle'}
+            size={20}
+            color={flightStatus.important ? colors.danger : colors.success}
+          />
+          <View style={styles.flex}>
+            <Text style={styles.statusHeadline}>{flightStatus.headline}</Text>
+            <Text style={styles.statusMeta}>
+              Live flight status
+              {flightStatus.departureTerminal ? ` · Terminal ${flightStatus.departureTerminal}` : ''}
+              {flightStatus.departureGate ? ` · Gate ${flightStatus.departureGate}` : ''}
+            </Text>
+          </View>
+        </Card>
+      )}
+
+      {/* Real-time TSA line → adjusted leave-by advice */}
+      {tsaNow && (
+        <Card style={styles.statusCard}>
+          <Ionicons name="shield-checkmark" size={20} color={colors.primary} />
+          <View style={styles.flex}>
+            <Text style={styles.statusHeadline}>{tsaNow.label}</Text>
+            {tsaNow.waitMinutes > 25 && (
+              <Text style={styles.statusMeta}>
+                Line is longer than the plan budgeted — leave ~{tsaNow.waitMinutes - 25} min earlier.
+              </Text>
+            )}
+          </View>
+        </Card>
+      )}
 
       {highWarnings.length > 0 && <WarningList warnings={highWarnings} />}
 
@@ -278,6 +353,11 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   content: { padding: spacing.lg, gap: spacing.lg, paddingBottom: spacing.xxxl },
   screenTitle: { ...typography.hero, color: colors.ink },
+  statusCard: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  statusCardAlert: { borderColor: colors.danger, borderWidth: 1.5 },
+  statusCardOk: { borderColor: colors.success, borderWidth: 1 },
+  statusHeadline: { fontSize: 14, fontWeight: '800', color: colors.ink },
+  statusMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
   heroCard: {
     backgroundColor: colors.navy,
     borderRadius: radii.xl,

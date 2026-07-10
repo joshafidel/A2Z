@@ -14,7 +14,32 @@
  */
 
 import type { ServiceResult } from '../types';
+import { aiUberFareBand } from './aiService';
 import { isLive, mockDelay } from './config';
+
+/**
+ * City price index vs the New York baseline — calibrated from published
+ * per-mile/per-minute rate cards. Unknown cities ride at 0.8 (typical
+ * mid-size US market).
+ */
+const CITY_COST_INDEX: Record<string, number> = {
+  'New York': 1.0,
+  'San Francisco': 0.98,
+  Boston: 0.92,
+  Seattle: 0.92,
+  'Los Angeles': 0.88,
+  Washington: 0.86,
+  Chicago: 0.85,
+  Philadelphia: 0.82,
+  Miami: 0.8,
+  Denver: 0.8,
+  Atlanta: 0.78,
+  'Las Vegas': 0.78,
+  Austin: 0.78,
+  Dallas: 0.76,
+  Houston: 0.76,
+  Phoenix: 0.75,
+};
 
 export interface RideEstimate {
   provider: string; // "Uber", "Uber Shuttle", "Lyft", "Empower", "Taxi"
@@ -119,12 +144,22 @@ export async function estimateRide(
     return { ok: false, error: 'Invalid distance for ride estimate', code: 'NOT_FOUND' };
   }
 
-  // UberX-style base fare model: base + per-mile + per-minute (+ airport surcharge).
+  // UberX-style base fare model calibrated to NYC rates, scaled by the
+  // city's real price level: base + per-mile + per-minute (+ airport fee).
   const base = 3.5;
   const perMile = 2.4;
   const perMin = 0.55;
   const airportFee = opts.airport ? 5 : 0;
-  const mid = base + perMile * distanceMiles + perMin * rideMinutes + airportFee;
+  const cityIndex = (opts.city && CITY_COST_INDEX[opts.city]) || 0.8;
+  let mid = (base + perMile * distanceMiles + perMin * rideMinutes) * cityIndex + airportFee;
+
+  // AI refinement: when an Anthropic key is configured, Claude estimates
+  // today's real UberX band for this city+distance and recalibrates the
+  // whole comparison around it (cached per city/distance bucket).
+  if (opts.city) {
+    const band = await aiUberFareBand(opts.city, distanceMiles, rideMinutes);
+    if (band) mid = (band.low + band.high) / 2;
+  }
 
   const estimates = PROVIDERS.filter(
     (p) =>

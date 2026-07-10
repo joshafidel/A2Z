@@ -55,7 +55,9 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
         end={{ x: 1, y: 1 }}
         style={[styles.hero, { paddingTop: insets.top + spacing.xxl }]}
       >
-        <Text style={styles.brand}>A2Z</Text>
+        <Text style={styles.brand}>
+          A<Text style={styles.brandAccent}>2</Text>Z
+        </Text>
         <Text style={styles.heroTitle}>Where are you going?</Text>
       </LinearGradient>
 
@@ -137,7 +139,8 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: radii.xl,
     gap: spacing.md,
   },
-  brand: { color: colors.textOnDark, fontSize: 16, fontWeight: '900', letterSpacing: 4 },
+  brand: { color: colors.textOnDark, fontSize: 18, fontWeight: '900', letterSpacing: 4 },
+  brandAccent: { color: colors.primary },
   heroTitle: { ...typography.hero, fontSize: 32, lineHeight: 38, color: colors.textOnDark },
   searchCard: {
     marginTop: -spacing.xxxl,
