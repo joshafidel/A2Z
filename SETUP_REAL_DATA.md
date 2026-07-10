@@ -6,34 +6,78 @@ all. Each ends with "Verify" so you know it worked.
 
 ---
 
-## 1. Create your local `.env` file
+## 1. Where your keys live — pick ONE of these two paths
 
-1. In the project root, copy the template:
-   ```bash
-   cp .env.example .env
-   ```
-2. Open `.env` in any editor.
-3. Change the first setting to:
-   ```
-   EXPO_PUBLIC_API_MODE=live
-   ```
-4. Leave `EXPO_PUBLIC_LIVE_DATA=on` as is (this keeps the free keyless
-   sources — weather, road routing, transit routing — active).
-5. Never commit `.env`. It is already in `.gitignore`.
+Every integration below boils down to "put a named setting where the app
+can read it." There are two places that can be, and **if your app runs on
+Vercel you only need Path A — no terminal, no code editing.**
 
-## 2. Know where keys go on Vercel
+### Path A — Vercel website only (recommended, no terminal needed)
 
-Your local `.env` only affects `npm run web` / local builds. For the
-deployed site:
+This configures the LIVE site that you and others open in a browser/phone.
 
-1. Go to **vercel.com → your A2Z project → Settings → Environment Variables**.
-2. For every key below, click **Add New**, paste the **Name** exactly as
-   written (e.g. `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY`) and the **Value** (the
-   key), select all environments, and **Save**.
-3. After adding keys, go to **Deployments → ⋯ on the latest → Redeploy**.
-   This matters: Expo bakes `EXPO_PUBLIC_*` values in at build time, so new
-   keys do nothing until you redeploy.
-4. Also add `EXPO_PUBLIC_API_MODE` = `live` there once.
+1. Open **[vercel.com/dashboard](https://vercel.com/dashboard)** in your
+   browser and log in (same account you deployed A2Z with).
+2. Click your **A2Z project** in the list.
+3. In the project's top menu bar, click **Settings**.
+4. In the left sidebar, click **Environment Variables**.
+5. You'll see two boxes: **Key** (the name) and **Value**. Type the name
+   EXACTLY as written in this guide — for example:
+   - Key: `EXPO_PUBLIC_API_MODE`  Value: `live`
+6. Leave the environment checkboxes as they are (all selected) and click
+   **Save**. Repeat for each key you collect in steps 3–7.
+7. **Nothing changes until you rebuild the site.** After adding keys:
+   click **Deployments** in the top menu → find the newest deployment at
+   the top → click the **⋯** (three dots) on its right → **Redeploy** →
+   confirm. Wait ~2 minutes for it to finish.
+8. Vercel's own reference with screenshots, if you get lost:
+   [vercel.com/docs/environment-variables](https://vercel.com/docs/environment-variables)
+
+That's it — you can do this entire guide without ever touching a `.env`
+file. Only read Path B if you also run the app on your own computer.
+
+### Path B — a `.env` file on your computer (only for local development)
+
+A `.env` file is just a plain text file named exactly `.env` that sits in
+the project folder (the same folder that contains `package.json`). The app
+reads settings from it when you run it locally with `npm start` /
+`npm run web`. It does NOT affect the Vercel site.
+
+**Using a code editor (easiest):**
+1. Install [Visual Studio Code](https://code.visualstudio.com/) (free) if
+   you don't have an editor.
+2. Open VS Code → **File → Open Folder…** → choose your A2Z project folder
+   (the one you cloned from GitHub).
+3. In the file list on the left, click the file named **`.env.example`**
+   and select all its text (Ctrl/Cmd-A) and copy it (Ctrl/Cmd-C).
+4. Right-click in the file list → **New File…** → name it exactly `.env`
+   (starts with a dot, no other extension) → paste (Ctrl/Cmd-V) → save.
+5. In your new `.env`, find the line `EXPO_PUBLIC_API_MODE=mock` and change
+   it to `EXPO_PUBLIC_API_MODE=live`.
+6. As you collect keys in steps 3–7, paste each one after its `=` sign,
+   with no spaces and no quotes, e.g.
+   `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY=AIzaSyD...`
+7. Save the file, then stop (Ctrl-C) and re-run `npm run web` — settings
+   are read when the app starts.
+
+**Or using the terminal** (macOS: open the **Terminal** app; Windows: open
+**PowerShell**), from inside the project folder:
+```bash
+cd path/to/A2Z        # wherever you cloned the repo
+cp .env.example .env  # Windows PowerShell: copy .env.example .env
+```
+Then edit `.env` in any text editor as described above.
+
+⚠ Never commit `.env` to GitHub — it holds your private keys. The repo's
+`.gitignore` already excludes it, so a normal `git push` won't include it.
+
+## 2. The rule that trips everyone up
+
+`EXPO_PUBLIC_*` settings are **baked in when the site is built**, not read
+while it runs. So:
+- Added/changed a key on Vercel → you MUST **Redeploy** (step A7 above).
+- Added/changed a key in `.env` → you MUST restart `npm run web`.
+If Settings in the app still says "Mock", this is almost always why.
 
 ---
 
