@@ -39,100 +39,7 @@ export interface LocalAccess {
   legs: LocalLeg[];
 }
 
-/**
- * REAL Google Maps transit routing: which subway, which bus, real travel
- * times, and the real fare when Google publishes one. Activates when
- * EXPO_PUBLIC_GOOGLE_MAPS_API_KEY is set; callers keep their curated
- * estimates otherwise.
- */
-export async function getLiveTransitLegs(
-  originAddress: string,
-  destAddress: string,
-): Promise<LocalLeg[] | undefined> {
-  if (!isLive('googleMapsApiKey')) return undefined;
-  try {
-    const url =
-      `https://maps.googleapis.com/maps/api/directions/json?origin=${encodeURIComponent(originAddress)}` +
-      `&destination=${encodeURIComponent(destAddress)}&mode=transit&key=${apiConfig.googleMapsApiKey}`;
-    const res = await fetchWithTimeout(url, 5000);
-    if (!res.ok) return undefined;
-    const body = (await res.json()) as {
-      status: string;
-      routes?: Array<{
-        fare?: { currency: string; value: number };
-        legs: Array<{
-          steps: Array<{
-            travel_mode: 'WALKING' | 'TRANSIT' | 'DRIVING';
-            duration: { value: number };
-            distance: { value: number };
-            html_instructions?: string;
-            transit_details?: {
-              headsign?: string;
-              headway?: number; // seconds between departures
-              line: {
-                short_name?: string;
-                name?: string;
-                color?: string;
-                agencies?: Array<{ name: string }>;
-                vehicle?: { name?: string; type?: string };
-              };
-            };
-          }>;
-        }>;
-      }>;
-    };
-    const leg = body.routes?.[0]?.legs?.[0];
-    if (body.status !== 'OK' || !leg) return undefined;
-
-    const fare = body.routes?.[0]?.fare?.value;
-    let farePlaced = false;
-    const legs: LocalLeg[] = leg.steps
-      .filter((s) => s.travel_mode === 'WALKING' || s.travel_mode === 'TRANSIT')
-      .map((s) => {
-        const minutes = Math.max(1, Math.round(s.duration.value / 60));
-        const miles = Math.round((s.distance.value / 1609.34) * 10) / 10;
-        if (s.travel_mode === 'TRANSIT' && s.transit_details) {
-          const line = s.transit_details.line;
-          const vehicle = line.vehicle?.name ?? 'Transit';
-          const lineName = line.short_name ?? line.name ?? '';
-          // Google's published fare goes on the first transit leg.
-          const cost = !farePlaced && fare !== undefined ? fare : 0;
-          if (cost > 0) farePlaced = true;
-          return {
-            mode: 'transit' as const,
-            title: `${vehicle} ${lineName}${s.transit_details.headsign ? ` toward ${s.transit_details.headsign}` : ''}`.trim(),
-            from: originAddress,
-            to: destAddress,
-            durationMinutes: minutes,
-            distanceMiles: miles,
-            costUsd: cost,
-            provider: line.agencies?.[0]?.name,
-            lineName: lineName || undefined,
-            lineColor: line.color,
-            headwayMinutes: s.transit_details.headway
-              ? Math.round(s.transit_details.headway / 60)
-              : undefined,
-            notes: ['Live route via Google Maps'],
-          };
-        }
-        const instruction = s.html_instructions?.replace(/<[^>]+>/g, '') ?? 'Walk';
-        return {
-          mode: 'walk' as const,
-          title: instruction,
-          from: originAddress,
-          to: destAddress,
-          durationMinutes: minutes,
-          distanceMiles: miles,
-          costUsd: 0,
-        };
-      });
-    return legs.length > 0 ? legs : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** One real transit itinerary (Transitous/MOTIS or Google). */
+/** One real transit itinerary (Google Routes API or Transitous). */
 export interface TransitPath {
   title: string;
   legs: LocalLeg[];
@@ -140,91 +47,118 @@ export interface TransitPath {
   arriveIso?: string;
 }
 
+/** "312s" → 312 (Routes API duration strings). */
+function secs(v?: string | number): number {
+  if (typeof v === 'number') return v;
+  return v ? parseInt(v, 10) || 0 : 0;
+}
+
+interface RoutesApiStep {
+  travelMode?: string;
+  staticDuration?: string;
+  distanceMeters?: number;
+  navigationInstruction?: { instructions?: string };
+  transitDetails?: {
+    headsign?: string;
+    stopDetails?: {
+      departureTime?: string;
+      arrivalTime?: string;
+      departureStop?: { name?: string };
+      arrivalStop?: { name?: string };
+    };
+    transitLine?: {
+      nameShort?: string;
+      name?: string;
+      color?: string;
+      agencies?: Array<{ name?: string }>;
+      vehicle?: { name?: { text?: string } };
+    };
+  };
+}
+
 /**
- * REAL Google Maps transit routing with ALTERNATIVES — the same list of
- * routes Google/Apple Maps shows (6+F vs M34+F vs M15), each with real
- * clock times, line names/colors, headways, and published fares.
- * Needs EXPO_PUBLIC_GOOGLE_MAPS_API_KEY.
+ * REAL Google transit routing via the current **Routes API** (the modern
+ * replacement for the retired legacy Directions API — new Google Cloud
+ * accounts can only enable this one). Returns the same multi-route list
+ * Google Maps shows: real clock times, line names/colors, and the
+ * published fare. Activates when EXPO_PUBLIC_GOOGLE_MAPS_API_KEY is set.
  */
-export async function getLiveTransitPaths(
+async function fetchGoogleTransitPaths(
   originAddress: string,
   destAddress: string,
+  alternatives: boolean,
 ): Promise<TransitPath[] | undefined> {
   if (!isLive('googleMapsApiKey')) return undefined;
   try {
-    const url =
-      `https://maps.googleapis.com/maps/api/directions/json?origin=${encodeURIComponent(originAddress)}` +
-      `&destination=${encodeURIComponent(destAddress)}&mode=transit&alternatives=true&key=${apiConfig.googleMapsApiKey}`;
-    const res = await fetchWithTimeout(url, 6000);
+    const res = await fetchWithTimeout('https://routes.googleapis.com/directions/v2:computeRoutes', 6500, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiConfig.googleMapsApiKey,
+        'X-Goog-FieldMask': [
+          'routes.duration',
+          'routes.travelAdvisory.transitFare',
+          'routes.legs.steps.travelMode',
+          'routes.legs.steps.staticDuration',
+          'routes.legs.steps.distanceMeters',
+          'routes.legs.steps.navigationInstruction',
+          'routes.legs.steps.transitDetails',
+        ].join(','),
+      },
+      body: JSON.stringify({
+        origin: { address: originAddress },
+        destination: { address: destAddress },
+        travelMode: 'TRANSIT',
+        computeAlternativeRoutes: alternatives,
+      }),
+    });
     if (!res.ok) return undefined;
     const body = (await res.json()) as {
-      status: string;
       routes?: Array<{
-        fare?: { value: number };
-        legs: Array<{
-          departure_time?: { value: number }; // epoch seconds
-          arrival_time?: { value: number };
-          steps: Array<{
-            travel_mode: 'WALKING' | 'TRANSIT' | 'DRIVING';
-            duration: { value: number };
-            distance: { value: number };
-            html_instructions?: string;
-            transit_details?: {
-              headsign?: string;
-              headway?: number;
-              line: {
-                short_name?: string;
-                name?: string;
-                color?: string;
-                agencies?: Array<{ name: string }>;
-                vehicle?: { name?: string };
-              };
-            };
-          }>;
-        }>;
+        travelAdvisory?: { transitFare?: { units?: string; nanos?: number } };
+        legs?: Array<{ steps?: RoutesApiStep[] }>;
       }>;
     };
-    if (body.status !== 'OK' || !body.routes?.length) return undefined;
+    if (!body.routes?.length) return undefined;
 
     const paths = body.routes
       .slice(0, 3)
       .map((route): TransitPath | undefined => {
-        const leg = route.legs?.[0];
-        if (!leg) return undefined;
-        const fare = route.fare?.value;
+        const steps = route.legs?.[0]?.steps ?? [];
+        const fareUsd = route.travelAdvisory?.transitFare
+          ? Number(route.travelAdvisory.transitFare.units ?? 0) +
+            (route.travelAdvisory.transitFare.nanos ?? 0) / 1e9
+          : undefined;
         let farePlaced = false;
-        const legs: LocalLeg[] = leg.steps
-          .filter((s) => s.travel_mode === 'WALKING' || s.travel_mode === 'TRANSIT')
+        const legs: LocalLeg[] = steps
+          .filter((s) => s.travelMode === 'WALK' || s.travelMode === 'TRANSIT')
           .map((s) => {
-            const minutes = Math.max(1, Math.round(s.duration.value / 60));
-            const miles = Math.round((s.distance.value / 1609.34) * 10) / 10;
-            if (s.travel_mode === 'TRANSIT' && s.transit_details) {
-              const line = s.transit_details.line;
-              const lineName = line.short_name ?? line.name ?? '';
-              const cost = !farePlaced && fare !== undefined ? fare : 0;
+            const minutes = Math.max(1, Math.round(secs(s.staticDuration) / 60));
+            const miles = Math.round(((s.distanceMeters ?? 0) / 1609.34) * 10) / 10;
+            if (s.travelMode === 'TRANSIT' && s.transitDetails) {
+              const line = s.transitDetails.transitLine;
+              const lineName = line?.nameShort ?? line?.name ?? '';
+              const cost = !farePlaced && fareUsd !== undefined ? Math.round(fareUsd * 100) / 100 : 0;
               if (cost > 0) farePlaced = true;
               return {
                 mode: 'transit' as const,
-                title: `${line.vehicle?.name ?? 'Transit'} ${lineName}${
-                  s.transit_details.headsign ? ` toward ${s.transit_details.headsign}` : ''
+                title: `${line?.vehicle?.name?.text ?? 'Transit'} ${lineName}${
+                  s.transitDetails.headsign ? ` toward ${s.transitDetails.headsign}` : ''
                 }`.trim(),
-                from: originAddress,
-                to: destAddress,
+                from: s.transitDetails.stopDetails?.departureStop?.name ?? originAddress,
+                to: s.transitDetails.stopDetails?.arrivalStop?.name ?? destAddress,
                 durationMinutes: minutes,
                 distanceMiles: miles,
                 costUsd: cost,
-                provider: line.agencies?.[0]?.name,
+                provider: line?.agencies?.[0]?.name,
                 lineName: lineName || undefined,
-                lineColor: line.color,
-                headwayMinutes: s.transit_details.headway
-                  ? Math.round(s.transit_details.headway / 60)
-                  : undefined,
+                lineColor: line?.color,
                 notes: ['Live route via Google Maps'],
               };
             }
             return {
               mode: 'walk' as const,
-              title: s.html_instructions?.replace(/<[^>]+>/g, '') ?? 'Walk',
+              title: s.navigationInstruction?.instructions ?? 'Walk',
               from: originAddress,
               to: destAddress,
               durationMinutes: minutes,
@@ -233,24 +167,41 @@ export async function getLiveTransitPaths(
             };
           });
         if (!legs.some((l) => l.mode === 'transit')) return undefined;
+        const transitSteps = steps.filter((s) => s.travelMode === 'TRANSIT');
         return {
           title: legs
             .filter((l) => l.mode === 'transit')
             .map((l) => l.lineName ?? l.title)
             .join(' + '),
           legs,
-          departIso: leg.departure_time ? new Date(leg.departure_time.value * 1000).toISOString() : undefined,
-          arriveIso: leg.arrival_time ? new Date(leg.arrival_time.value * 1000).toISOString() : undefined,
+          departIso: transitSteps[0]?.transitDetails?.stopDetails?.departureTime,
+          arriveIso: transitSteps[transitSteps.length - 1]?.transitDetails?.stopDetails?.arrivalTime,
         };
       })
-      .filter((p): p is TransitPath => Boolean(p));
+      .filter((path): path is TransitPath => Boolean(path));
     return paths.length > 0 ? paths : undefined;
   } catch {
     return undefined;
   }
 }
 
-/** GTFS route colors sometimes arrive without the leading '#'. */
+/** Single best Google transit chain (first route). */
+export async function getLiveTransitLegs(
+  originAddress: string,
+  destAddress: string,
+): Promise<LocalLeg[] | undefined> {
+  const paths = await fetchGoogleTransitPaths(originAddress, destAddress, false);
+  return paths?.[0]?.legs;
+}
+
+/** Google's full route list with alternatives — the Maps-style picker. */
+export async function getLiveTransitPaths(
+  originAddress: string,
+  destAddress: string,
+): Promise<TransitPath[] | undefined> {
+  return fetchGoogleTransitPaths(originAddress, destAddress, true);
+}
+
 function hexColor(c?: string): string | undefined {
   if (!c) return undefined;
   return c.startsWith('#') ? c : `#${c}`;

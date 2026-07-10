@@ -88,55 +88,61 @@ https://vercel.com/docs/environment-variables
 
 **What you get:** the exact route lists Google Maps shows (which subway,
 which bus, 2–3 alternatives), real departure/arrival clock times, official
-line colors, real fares, and "every 6 min" frequencies.
+line colors, and real fares.
 
-**What it costs:** Google requires a credit card, but gives every account
-a monthly free usage allowance that comfortably covers personal use of the
-Directions service. You will almost certainly pay $0.
+**Heads up before you start:** Google requires a credit card, but includes
+a monthly free usage allowance that comfortably covers personal use — you
+will almost certainly pay $0. The app uses Google's current **Routes API**
+(the old "Directions API" is retired for new accounts, so ignore any
+tutorial that mentions it).
 
-1. Go to **https://console.cloud.google.com** and sign in with any Google
-   account (a plain Gmail works).
-2. First-time visitors: accept the terms. You may be offered a free trial —
-   fine either way.
-3. Create a project to hold your key:
-   - At the very top of the page there's a dropdown that says
-     **Select a project** (or shows a project name). Click it.
-   - In the window that opens, click **NEW PROJECT** (top right).
-   - Name: `a2z` → click **CREATE** → wait a few seconds → click the
-     notification (or reopen the dropdown) to **select** the new project.
-4. Turn on the service A2Z needs:
-   - Click the **☰ hamburger menu** (top-left) → **APIs & Services** →
-     **Library**.
-   - In the search box type **Directions API** and click the result named
-     exactly "Directions API".
-   - Click the blue **ENABLE** button.
-   - If it asks you to set up **billing**: follow the prompts to add a
-     card (this activates the free monthly allowance; you can also set a
-     budget alert at $1 under Billing → Budgets & alerts for peace of mind).
-5. Create the key:
-   - ☰ menu → **APIs & Services** → **Credentials**.
-   - Click **+ CREATE CREDENTIALS** (top) → **API key**.
-   - A popup shows your new key (`AIza...`). Click the copy icon.
-6. Lock the key down so nobody else can run up your bill:
-   - In the same popup click **Edit API key** (or click the key's name in
-     the list).
-   - Under **Application restrictions** choose **Websites**, then click
-     **ADD** and enter your site: `https://YOUR-APP-NAME.vercel.app/*`
-     (copy your real address from the Vercel Overview page). Add another
-     entry `http://localhost:*` if you ever run the app on your computer.
-   - Under **API restrictions** choose **Restrict key**, tick
-     **Directions API**, and **Save**.
-7. Back to Vercel (Part 2 recipe):
+Google's console changes its look often, so here are BOTH ways in — use
+whichever matches what you see:
+
+**The easy way — the Maps Platform welcome wizard:**
+
+1. Go to **https://console.cloud.google.com/google/maps-apis** and sign in
+   with any Google account (a plain Gmail works).
+2. First visit triggers a setup wizard: it asks you to agree to terms,
+   create a project (accept the suggested name or type `a2z`), and **set up
+   billing** — follow the card form; this is what activates the free
+   monthly allowance. New accounts usually also get a 90-day free-trial
+   credit on top.
+3. At the end, the wizard shows **your API key** in a popup — click the
+   copy icon and save it somewhere for a minute. (It also enables the
+   standard bundle of Maps APIs for you, which includes Routes.)
+4. Missed the popup? In the left sidebar of the Maps Platform page click
+   **Keys & Credentials** — your key (often named "Maps Platform API Key")
+   is listed there with a **SHOW KEY** / copy option.
+
+**If you don't get a wizard (existing Google Cloud users):**
+
+1. Same page: **https://console.cloud.google.com/google/maps-apis**
+2. Make sure a project is selected in the dropdown at the very top.
+3. Left sidebar → **APIs & Services** → find **Routes API** in the list →
+   click it → click **Enable** if it isn't already.
+4. Left sidebar → **Keys & Credentials** → **+ Create credentials → API
+   key** → copy it.
+
+**Then, either way:**
+
+5. *(Recommended, 1 min)* Protect the key: on **Keys & Credentials**, click
+   the pencil/⋮ next to your key → under **Application restrictions**
+   choose **Websites** → **Add** → enter `https://YOUR-APP.vercel.app/*`
+   (your real address is on the Vercel Overview page) → Save.
+6. On Vercel (Part 2 recipe):
    - Key: `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY`
-   - Value: *(paste the `AIza...` string)*
-8. Redeploy (Part 2, step 8).
+   - Value: *(paste the key — starts with `AIza`)*
+7. **Redeploy** (Part 2, step 8).
 
 **Check it worked:** open your site → plan any trip with a flight → on the
 "Getting to …" step tap **Public transportation** → "routes — pick your
-subway & bus lines". You should now see real clock times like
-"9:41 AM – 10:12 AM" on the routes.
+subway & bus lines". Routes now show real clock times (e.g.
+"9:41 AM – 10:12 AM") and legs marked "Live route via Google Maps".
 
----
+**If Google feels like too much:** skip it entirely. The app already pulls
+real transit routes keylessly from Transitous (community GTFS routing) —
+Google just makes them sharper and adds fares.
 
 ## Part 4 — Anthropic key → AI concierge + smarter ride prices (5 min)
 
