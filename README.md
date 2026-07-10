@@ -126,6 +126,8 @@ Every live call fails fast into the mock layer, so the app always works — offl
 
 ### Enabling every real-time source
 
+> Full click-by-click walkthrough with verification steps: **[SETUP_REAL_DATA.md](./SETUP_REAL_DATA.md)**
+
 1. Copy `.env.example` to `.env`, set `EXPO_PUBLIC_API_MODE=live`, then add keys:
 2. **Google Maps** (`EXPO_PUBLIC_GOOGLE_MAPS_API_KEY`): Google Cloud Console → enable *Directions API* → create key. Unlocks accurate transit routes with alternates, real fares, headways, and clock times.
 3. **Anthropic** (`EXPO_PUBLIC_ANTHROPIC_API_KEY`): console.anthropic.com. Unlocks the AI concierge and AI-refined rideshare price bands. Ship via a backend proxy in production.
