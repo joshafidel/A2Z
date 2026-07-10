@@ -1,211 +1,278 @@
-# A2Z — Step-by-Step: Turning On Every Real-Time Data Source
+# A2Z — The Complete Beginner's Guide to Turning On Real Live Data
 
-Follow these in order. Steps 1–2 take five minutes and are shared by every
-integration; steps 3–7 are one per provider and are independent — do any or
-all. Each ends with "Verify" so you know it worked.
+This guide assumes **zero** prior experience with Vercel, coding, or APIs.
+Every click is written out. Budget 30–45 minutes to do everything, or 10
+minutes if you only do Part 3 (Google Maps), which is the biggest upgrade.
 
----
-
-## 1. Where your keys live — pick ONE of these two paths
-
-Every integration below boils down to "put a named setting where the app
-can read it." There are two places that can be, and **if your app runs on
-Vercel you only need Path A — no terminal, no code editing.**
-
-### Path A — Vercel website only (recommended, no terminal needed)
-
-This configures the LIVE site that you and others open in a browser/phone.
-
-1. Open **[vercel.com/dashboard](https://vercel.com/dashboard)** in your
-   browser and log in (same account you deployed A2Z with).
-2. Click your **A2Z project** in the list.
-3. In the project's top menu bar, click **Settings**.
-4. In the left sidebar, click **Environment Variables**.
-5. You'll see two boxes: **Key** (the name) and **Value**. Type the name
-   EXACTLY as written in this guide — for example:
-   - Key: `EXPO_PUBLIC_API_MODE`  Value: `live`
-6. Leave the environment checkboxes as they are (all selected) and click
-   **Save**. Repeat for each key you collect in steps 3–7.
-7. **Nothing changes until you rebuild the site.** After adding keys:
-   click **Deployments** in the top menu → find the newest deployment at
-   the top → click the **⋯** (three dots) on its right → **Redeploy** →
-   confirm. Wait ~2 minutes for it to finish.
-8. Vercel's own reference with screenshots, if you get lost:
-   [vercel.com/docs/environment-variables](https://vercel.com/docs/environment-variables)
-
-That's it — you can do this entire guide without ever touching a `.env`
-file. Only read Path B if you also run the app on your own computer.
-
-### Path B — a `.env` file on your computer (only for local development)
-
-A `.env` file is just a plain text file named exactly `.env` that sits in
-the project folder (the same folder that contains `package.json`). The app
-reads settings from it when you run it locally with `npm start` /
-`npm run web`. It does NOT affect the Vercel site.
-
-**Using a code editor (easiest):**
-1. Install [Visual Studio Code](https://code.visualstudio.com/) (free) if
-   you don't have an editor.
-2. Open VS Code → **File → Open Folder…** → choose your A2Z project folder
-   (the one you cloned from GitHub).
-3. In the file list on the left, click the file named **`.env.example`**
-   and select all its text (Ctrl/Cmd-A) and copy it (Ctrl/Cmd-C).
-4. Right-click in the file list → **New File…** → name it exactly `.env`
-   (starts with a dot, no other extension) → paste (Ctrl/Cmd-V) → save.
-5. In your new `.env`, find the line `EXPO_PUBLIC_API_MODE=mock` and change
-   it to `EXPO_PUBLIC_API_MODE=live`.
-6. As you collect keys in steps 3–7, paste each one after its `=` sign,
-   with no spaces and no quotes, e.g.
-   `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY=AIzaSyD...`
-7. Save the file, then stop (Ctrl-C) and re-run `npm run web` — settings
-   are read when the app starts.
-
-**Or using the terminal** (macOS: open the **Terminal** app; Windows: open
-**PowerShell**), from inside the project folder:
-```bash
-cd path/to/A2Z        # wherever you cloned the repo
-cp .env.example .env  # Windows PowerShell: copy .env.example .env
-```
-Then edit `.env` in any text editor as described above.
-
-⚠ Never commit `.env` to GitHub — it holds your private keys. The repo's
-`.gitignore` already excludes it, so a normal `git push` won't include it.
-
-## 2. The rule that trips everyone up
-
-`EXPO_PUBLIC_*` settings are **baked in when the site is built**, not read
-while it runs. So:
-- Added/changed a key on Vercel → you MUST **Redeploy** (step A7 above).
-- Added/changed a key in `.env` → you MUST restart `npm run web`.
-If Settings in the app still says "Mock", this is almost always why.
+*(You do NOT need Supabase or any database for any of this.)*
 
 ---
 
-## 3. Google Maps — accurate transit routes (biggest upgrade)
+## Part 0 — The concepts, in plain English (2 minutes)
 
-Unlocks: the real route list (which subway, which bus, alternates), real
-clock times, official line colors, published fares, and service frequency.
+**What is an API?** A website for programs instead of people. When A2Z
+wants to know "what's the subway route from here to JFK?", it asks
+Google's computers through Google's API and gets an answer back.
 
-1. Go to **console.cloud.google.com** and sign in with a Google account.
-2. Top bar → project dropdown → **New Project** → name it `a2z` → Create.
-3. Left menu → **APIs & Services → Library**.
-4. Search **"Directions API"** → open it → **Enable**.
-   (If prompted, set up billing — Google requires a card, but gives a
-   monthly free allowance that comfortably covers personal use.)
-5. Left menu → **APIs & Services → Credentials** → **Create Credentials →
-   API key**. Copy the key.
-6. Click the new key to edit it → under **Application restrictions** choose
-   **Websites** and add your Vercel domain (`https://your-app.vercel.app/*`)
-   plus `http://localhost:*` for local testing → under **API restrictions**
-   select **Directions API** → Save.
-7. Put it in `.env` and Vercel:
-   ```
-   EXPO_PUBLIC_GOOGLE_MAPS_API_KEY=AIza...
-   ```
+**What is an API key?** A long password-like string (like
+`AIzaSyD4f8...`) that identifies YOUR account when A2Z talks to those
+companies. Each company gives you your own key when you sign up. Keys are
+secrets — don't post them publicly.
 
-**Verify:** plan any trip → first-mile step → "Public transportation" →
-"routes — pick your subway & bus lines". Routes should show clock times
-(e.g. 9:41 AM – 10:12 AM) and legs noted "Live route via Google Maps".
+**What is an environment variable?** A named setting the app reads, like a
+labeled box: the label is the name (`EXPO_PUBLIC_GOOGLE_MAPS_API_KEY`) and
+inside is your key. You'll create these boxes on Vercel's website.
 
-## 4. Anthropic — AI concierge + AI-refined ride prices
+**What is Vercel?** The service that hosts your A2Z website. When you
+push code to GitHub, Vercel builds it into a website and serves it at your
+`https://….vercel.app` address.
 
-Unlocks: the "Curate my travel plan" briefing and Claude recalibrating the
-Uber/Lyft/taxi comparison to today's real price band per city.
-
-1. Go to **console.anthropic.com** → sign up / sign in.
-2. **Settings → API Keys → Create Key** → name it `a2z` → copy the key
-   (shown once).
-3. Add credits under **Plans & Billing** if you don't have free credit.
-4. Put it in `.env` and Vercel:
-   ```
-   EXPO_PUBLIC_ANTHROPIC_API_KEY=sk-ant-...
-   ```
-
-⚠ **Security note:** `EXPO_PUBLIC_*` values are visible in the browser
-bundle. Fine for a personal demo; for a public product, create a tiny
-backend endpoint that holds the key and forwards requests, and point
-`aiService.ts` at it.
-
-**Verify:** finish a plan → summary screen → "Curate my travel plan" shows
-a "Powered by Claude" badge. Ride estimates on the first-mile step will
-quietly recalibrate (first search in a city takes a beat longer).
-
-## 5. aviationstack — real-time flight status alerts
-
-Unlocks: the My Trip banner ("DL 1232 delayed 45 min — new departure
-4:45 PM"), gate/terminal info, and a browser notification on important
-changes.
-
-1. Go to **aviationstack.com** → **Get Free API Key** → sign up.
-2. Your dashboard shows the **API Access Key** — copy it.
-3. Put it in `.env` and Vercel:
-   ```
-   EXPO_PUBLIC_AVIATIONSTACK_API_KEY=...
-   ```
-4. **Important limitation:** the free plan (100 requests/month) is
-   **HTTP-only**. Your Vercel site is HTTPS, and browsers block HTTP calls
-   from HTTPS pages — so on the deployed site you need their **Basic plan**
-   (HTTPS) or a small proxy. The free key still works when testing locally
-   over `http://localhost`.
-
-**Verify:** save a trip with a flight, open **My Trip**. A status card
-appears under the countdown within a few seconds and re-polls every
-5 minutes. Allow notifications when prompted to get pop-up alerts.
-
-## 6. TSA Wait Times — live security lines → smarter "leave by"
-
-Unlocks: real queue length at your departure airport, feeding the
-arrive-by/leave-home math and a My Trip card ("line is longer than
-budgeted — leave ~15 min earlier").
-
-1. Go to **tsawaittimes.com/api**.
-2. Fill in the short request form (name + email + intended use); the key
-   arrives by email.
-3. Put it in `.env` and Vercel:
-   ```
-   EXPO_PUBLIC_TSA_WAIT_API_KEY=...
-   ```
-
-**Verify:** with a flight trip saved, My Trip shows "Security at JFK:
-~NN min right now (live)". Without the key the same card logic uses
-per-airport, per-hour estimates and says "(estimate)".
-
-## 7. Amadeus — live flight fares (optional)
-
-Unlocks: real airfares on the ticket board instead of calibrated estimates.
-
-1. Go to **developers.amadeus.com** → **Register** (free self-service).
-2. **My Self-Service Workspace → Create New App** → name it `a2z`.
-3. Copy the **API Key** and **API Secret**.
-4. Put them in `.env` and Vercel:
-   ```
-   EXPO_PUBLIC_AMADEUS_CLIENT_ID=...
-   EXPO_PUBLIC_AMADEUS_CLIENT_SECRET=...
-   ```
-5. Note: new keys start in Amadeus's **test environment** (which the app
-   uses) — quotas are generous for development; move to production keys on
-   their site when ready.
-
-**Verify:** ticket board flights show "Live fare via Amadeus" notes instead
-of "Fare is an estimate…".
+**The one rule that trips everyone up:** your settings get baked into the
+website **when Vercel builds it**. Adding a key does nothing until you
+click **Redeploy** (Part 2, step 8). If something "isn't working," it's
+almost always this.
 
 ---
 
-## 8. Final checklist
+## Part 1 — Find your project on Vercel (2 minutes)
 
-- [ ] `.env` locally + the same variables in Vercel, `EXPO_PUBLIC_API_MODE=live`
-- [ ] Redeployed on Vercel after adding variables
-- [ ] **Settings tab** in the app: each connected source now reads
-      **Configured** instead of **Mock**
-- [ ] Keyless sources (Open-Meteo weather, OSRM roads, Nominatim geocoding,
-      Transitous transit) were already live — no action needed
+1. Open a browser and go to **https://vercel.com/dashboard**
+2. Log in. If you deployed A2Z by importing the GitHub repo, click
+   **Continue with GitHub** and use your GitHub account.
+3. You'll land on a page listing your projects. Find the one named **a2z**
+   (or whatever it was called when you imported the repository) and
+   **click its name**.
+4. You're now on the project's Overview page. Bookmark it — you'll come
+   back here after every part below.
+
+*Never deployed at all? Go to https://vercel.com/new, click Continue with
+GitHub, pick the `A2Z` repository from the list, and click **Deploy** —
+the project contains a `vercel.json` file that tells Vercel exactly how to
+build it, so you don't change any settings. Two minutes later you'll have
+a live URL.*
+
+---
+
+## Part 2 — How to add ANY setting to Vercel (you'll repeat this a lot)
+
+This is the single skill the whole guide depends on. Practice it now by
+adding the first required setting.
+
+1. From your project's page, look at the horizontal menu near the top:
+   *Overview · Deployments · Analytics · Speed Insights · Logs · Settings*.
+   Click **Settings**.
+2. A menu appears down the left side. Click **Environment Variables**.
+3. You'll see a form with two main boxes:
+   - **Key** — the setting's name. Type it EXACTLY as this guide shows,
+     capital letters and underscores included. One typo = ignored.
+   - **Value** — the secret itself.
+4. Add this first one now:
+   - Key: `EXPO_PUBLIC_API_MODE`
+   - Value: `live`
+5. Leave the environment checkboxes (Production / Preview / Development)
+   all checked, and click **Save**.
+6. You'll see it appear in the list below. That's it — one box filled.
+7. **Repeat steps 3–5** for every key you collect in Parts 3–7.
+8. **After you finish adding keys, rebuild the site:** click
+   **Deployments** in the top menu → the top row is your latest build →
+   click the **⋯** (three-dots) button at the right end of that row →
+   click **Redeploy** → in the popup, click **Redeploy** again. Wait for
+   the status to turn to **Ready** (~2 minutes). Now your keys are live.
+
+Official Vercel help with screenshots if the page looks different:
+https://vercel.com/docs/environment-variables
+
+---
+
+## Part 3 — Google Maps key → real subway/bus routes (10 min, biggest upgrade)
+
+**What you get:** the exact route lists Google Maps shows (which subway,
+which bus, 2–3 alternatives), real departure/arrival clock times, official
+line colors, real fares, and "every 6 min" frequencies.
+
+**What it costs:** Google requires a credit card, but gives every account
+a monthly free usage allowance that comfortably covers personal use of the
+Directions service. You will almost certainly pay $0.
+
+1. Go to **https://console.cloud.google.com** and sign in with any Google
+   account (a plain Gmail works).
+2. First-time visitors: accept the terms. You may be offered a free trial —
+   fine either way.
+3. Create a project to hold your key:
+   - At the very top of the page there's a dropdown that says
+     **Select a project** (or shows a project name). Click it.
+   - In the window that opens, click **NEW PROJECT** (top right).
+   - Name: `a2z` → click **CREATE** → wait a few seconds → click the
+     notification (or reopen the dropdown) to **select** the new project.
+4. Turn on the service A2Z needs:
+   - Click the **☰ hamburger menu** (top-left) → **APIs & Services** →
+     **Library**.
+   - In the search box type **Directions API** and click the result named
+     exactly "Directions API".
+   - Click the blue **ENABLE** button.
+   - If it asks you to set up **billing**: follow the prompts to add a
+     card (this activates the free monthly allowance; you can also set a
+     budget alert at $1 under Billing → Budgets & alerts for peace of mind).
+5. Create the key:
+   - ☰ menu → **APIs & Services** → **Credentials**.
+   - Click **+ CREATE CREDENTIALS** (top) → **API key**.
+   - A popup shows your new key (`AIza...`). Click the copy icon.
+6. Lock the key down so nobody else can run up your bill:
+   - In the same popup click **Edit API key** (or click the key's name in
+     the list).
+   - Under **Application restrictions** choose **Websites**, then click
+     **ADD** and enter your site: `https://YOUR-APP-NAME.vercel.app/*`
+     (copy your real address from the Vercel Overview page). Add another
+     entry `http://localhost:*` if you ever run the app on your computer.
+   - Under **API restrictions** choose **Restrict key**, tick
+     **Directions API**, and **Save**.
+7. Back to Vercel (Part 2 recipe):
+   - Key: `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY`
+   - Value: *(paste the `AIza...` string)*
+8. Redeploy (Part 2, step 8).
+
+**Check it worked:** open your site → plan any trip with a flight → on the
+"Getting to …" step tap **Public transportation** → "routes — pick your
+subway & bus lines". You should now see real clock times like
+"9:41 AM – 10:12 AM" on the routes.
+
+---
+
+## Part 4 — Anthropic key → AI concierge + smarter ride prices (5 min)
+
+**What you get:** the "Curate my travel plan" briefing is written live by
+Claude, and Uber/Lyft/taxi estimates recalibrate to realistic price bands
+per city.
+
+**What it costs:** Anthropic bills per use; a few dollars of credit lasts
+a long time at this app's usage.
+
+1. Go to **https://console.anthropic.com** → **Sign up** (email or Google).
+2. Once you're in, find **API Keys** (left sidebar or under Settings).
+3. Click **Create Key** → name it `a2z` → **Create**.
+4. **Copy the key NOW** (starts with `sk-ant-`) — it's shown only once.
+   If you lose it, just delete it and create another.
+5. If your account has no free credit: **Plans & Billing** → add $5.
+6. On Vercel (Part 2 recipe):
+   - Key: `EXPO_PUBLIC_ANTHROPIC_API_KEY`
+   - Value: *(paste `sk-ant-...`)*
+7. Redeploy.
+
+**Check it worked:** finish planning a trip → on the summary screen press
+**Curate my travel plan** → the card shows a small **"Powered by Claude"**
+badge.
+
+**Honest warning:** settings that start with `EXPO_PUBLIC_` are visible to
+anyone who inspects your website's code. For a personal project that's an
+acceptable trade-off; if you ever launch publicly, ask a developer (or me)
+to move this one call behind a tiny server so the key stays hidden.
+
+---
+
+## Part 5 — aviationstack key → live flight status alerts (5 min)
+
+**What you get:** My Trip shows "DL 1232 delayed 45 min — new departure
+4:45 PM", gate/terminal info, and a phone/browser notification when your
+flight is delayed or cancelled.
+
+1. Go to **https://aviationstack.com** → click **GET FREE API KEY**.
+2. Choose the **Free** plan → fill in name/email/password → sign up.
+3. You land on a dashboard showing **Your API Access Key** — copy it.
+4. On Vercel (Part 2 recipe):
+   - Key: `EXPO_PUBLIC_AVIATIONSTACK_API_KEY`
+   - Value: *(paste it)*
+5. Redeploy.
+
+**⚠ Important limitation:** the free plan only answers over plain HTTP,
+and your Vercel site uses HTTPS — browsers refuse to mix the two. So on
+the live site, flight status needs their **Basic plan** (~$10/mo, HTTPS).
+The free key DOES work when testing on your own computer. If it's not
+worth $10/mo to you, simply skip this part — the app works fine without
+it, it just won't show live flight status.
+
+**Check it worked:** save a trip that includes a flight → open **My Trip**
+→ a status card appears under the countdown within seconds, and the
+browser asks permission to send notifications.
+
+---
+
+## Part 6 — TSA Wait Times key → live security lines (5 min)
+
+**What you get:** "Security at JFK: ~35 min right now (live)" on My Trip,
+and the app's leave-home-by advice stretches automatically when the
+line is long.
+
+1. Go to **https://www.tsawaittimes.com/api**
+2. Fill in the short form: your name, email, and what you'll use it for
+   ("personal travel-planning app" is fine) → submit.
+3. The API key arrives by **email** (usually quickly).
+4. On Vercel (Part 2 recipe):
+   - Key: `EXPO_PUBLIC_TSA_WAIT_API_KEY`
+   - Value: *(paste it)*
+5. Redeploy.
+
+**Check it worked:** with a flight trip saved, My Trip's security card
+says "(live)" at the end instead of "(estimate)".
+
+---
+
+## Part 7 — Amadeus keys → real airline fares (10 min, optional)
+
+**What you get:** the flight ticket board shows actual current fares
+("Live fare via Amadeus") instead of calibrated estimates.
+
+1. Go to **https://developers.amadeus.com** → **Register** (top right) →
+   create a free account and confirm your email.
+2. Log in → click your name (top right) → **My Self-Service Workspace**.
+3. Click **Create New App** → name: `a2z` → **Create**.
+4. The app's page shows two values: **API Key** and **API Secret**. Copy
+   both.
+5. On Vercel, add TWO variables (Part 2 recipe, twice):
+   - Key: `EXPO_PUBLIC_AMADEUS_CLIENT_ID` — Value: *(the API Key)*
+   - Key: `EXPO_PUBLIC_AMADEUS_CLIENT_SECRET` — Value: *(the API Secret)*
+6. Redeploy.
+
+New Amadeus accounts start in their free **test environment**, which is
+what the app calls — generous limits, occasional gaps in coverage. That's
+normal.
+
+**Check it worked:** flight tickets show a "Live fare via Amadeus" note.
+
+---
+
+## Part 8 — Final checklist
+
+Open your live site and go to the **Settings tab** (bottom right):
+
+- [ ] Every source you configured shows **Configured** (green) instead of
+      **Mock**
+- [ ] The header says **Mode: Live APIs** (that's the
+      `EXPO_PUBLIC_API_MODE=live` variable from Part 2)
+- [ ] Weather, road routing, and basic transit routing were **already
+      live** before you started — they use free keyless services
+      (Open-Meteo, OSRM, Nominatim, Transitous) and needed nothing from you
 
 ## Troubleshooting
 
-| Symptom | Fix |
+| Problem | Cause & fix |
 | --- | --- |
-| Settings still says "Mock" after adding a key | You didn't redeploy (Vercel) or restart `npm run web` (local) — `EXPO_PUBLIC_*` is baked at build time |
-| Google routes never appear | Check the key allows your domain + Directions API is enabled; open the browser console for `REQUEST_DENIED` messages |
-| Flight status never appears | Free aviationstack is HTTP-only — blocked on HTTPS sites (see step 5.4) |
-| AI concierge shows the local plan | Key missing/exhausted credits; check the browser console for 401/429 |
-| Everything suddenly mock | `EXPO_PUBLIC_LIVE_DATA=off` somewhere, or `EXPO_PUBLIC_API_MODE` isn't `live` |
+| Settings tab still says "Mock" for a key you added | You didn't **Redeploy** after saving the variable (Part 2, step 8) — or the Key name has a typo. Compare letter-by-letter. |
+| Google routes never show clock times | The key isn't allowed: check that Directions API is **enabled**, the website restriction matches your real Vercel URL, and billing is set up. |
+| "Powered by Claude" never appears | Key typo, or the Anthropic account has no credit. |
+| Flight status never appears on the live site | The aviationstack free plan is HTTP-only (Part 5 warning) — upgrade or skip. |
+| Everything works locally but not on the site | Local `.env` and Vercel variables are separate — add the keys on Vercel too, then Redeploy. |
+| Want to undo everything | Delete the variables on Vercel, or set `EXPO_PUBLIC_API_MODE` back to `mock`, and Redeploy. Nothing breaks — the app falls back to its built-in demo data. |
+
+## Appendix — running on your own computer (optional)
+
+Only needed if you develop locally with `npm run web`:
+
+1. Install **Visual Studio Code** (free): https://code.visualstudio.com
+2. VS Code → **File → Open Folder…** → your A2Z folder.
+3. Click `.env.example` in the left file list, copy all its contents.
+4. Right-click the file list → **New File** → name it exactly `.env` →
+   paste → save.
+5. Change `EXPO_PUBLIC_API_MODE=mock` to `EXPO_PUBLIC_API_MODE=live` and
+   paste your keys after the `=` signs (no spaces, no quotes).
+6. Restart the dev server. `.env` is gitignored, so it can't be pushed to
+   GitHub by accident.
