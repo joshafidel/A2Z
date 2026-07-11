@@ -30,7 +30,7 @@ const headTags = [
   '<meta name="apple-mobile-web-app-capable" content="yes" />',
   '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />',
   '<meta name="apple-mobile-web-app-title" content="A2Z" />',
-  `<link rel="apple-touch-icon" href="${base}/icon-192.png" />`,
+  `<link rel="apple-touch-icon" sizes="180x180" href="${base}/apple-touch-icon.png" />`,
   `<link rel="icon" type="image/png" sizes="192x192" href="${base}/icon-192.png" />`,
 ].join('');
 
@@ -79,7 +79,7 @@ sw = sw.replace("const CACHE = 'a2z-v1';", `const CACHE = 'a2z-${hash.toString(3
 fs.writeFileSync(swPath, sw);
 
 // Sanity: the PWA assets must have been copied from public/ into dist/.
-for (const f of ['manifest.json', 'sw.js', 'icon-192.png', 'icon-512.png']) {
+for (const f of ['manifest.json', 'sw.js', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png']) {
   if (!fs.existsSync(path.join(dist, f))) {
     console.error(`Missing dist/${f} — is the public/ folder intact?`);
     process.exit(1);
