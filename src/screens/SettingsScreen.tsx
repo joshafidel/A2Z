@@ -7,6 +7,7 @@ import { Card } from '../components/Card';
 import { Chip } from '../components/Chip';
 import { SectionHeader } from '../components/SectionHeader';
 import { useTrip } from '../context/TripContext';
+import { BUILD_INFO } from '../buildInfo';
 import { apiConfig } from '../services/config';
 import * as storage from '../services/storageService';
 import { RIDESHARE_APPS } from '../services/storageService';
@@ -148,6 +149,12 @@ export function SettingsScreen() {
         </Text>
         <Text style={styles.aboutMeta}>
           Version 1.0.0 (MVP) · {savedTrips.length} saved trip{savedTrips.length === 1 ? '' : 's'}
+        </Text>
+        <Text style={styles.aboutMeta}>
+          Build {BUILD_INFO.commit}
+          {BUILD_INFO.builtAt !== 'dev'
+            ? ` · ${new Date(BUILD_INFO.builtAt).toLocaleString()}`
+            : ' (development)'}
         </Text>
       </Card>
     </ScrollView>

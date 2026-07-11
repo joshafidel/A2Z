@@ -10,7 +10,7 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "test": "jest",
-    "build": "expo export --platform web && node scripts/inject-pwa.js"
+    "build": "node scripts/build-info.js && expo export --platform web && node scripts/inject-pwa.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
