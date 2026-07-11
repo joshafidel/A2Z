@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import React, { useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Card } from '../components/Card';
@@ -99,6 +99,15 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
         </View>
       </View>
 
+      <Pressable
+        onPress={() => navigation.navigate('ImportTrip')}
+        style={styles.importLink}
+        accessibilityRole="button"
+      >
+        <Ionicons name="document-text-outline" size={15} color={colors.primary} />
+        <Text style={styles.importLinkText}>Paste a confirmation email instead</Text>
+      </Pressable>
+
       {activeTrip && (
         <View style={styles.body}>
           <Card
@@ -177,6 +186,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  importLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: spacing.md,
+  },
+  importLinkText: { fontSize: 13, fontWeight: '700', color: colors.primary },
   body: { padding: spacing.lg, gap: spacing.lg, marginTop: spacing.sm },
   tripCard: { gap: spacing.sm },
   tripHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },

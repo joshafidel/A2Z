@@ -10,7 +10,6 @@ import { MapPreview } from '../components/MapPreview';
 import { ModeIcon } from '../components/ModeIcon';
 import { SectionHeader } from '../components/SectionHeader';
 import { EmptyState } from '../components/States';
-import { TimelineView } from '../components/TimelineView';
 import { WarningList } from '../components/WarningList';
 import { useTrip } from '../context/TripContext';
 import {
@@ -21,9 +20,31 @@ import {
   type TripReminder,
 } from '../services/notificationService';
 import { DataFreshnessBadge } from '../components/DataFreshnessBadge';
+import { LivingTimelineView } from '../components/LivingTimelineView';
 import { getFlightStatus, notifyFlightUpdate, type FlightStatus } from '../services/flightStatusService';
 import { getTsaWaitNow, type TsaWaitNow } from '../services/tsaService';
 import { recordSnapshot, type TripChange } from '../services/tripMonitorService';
+import {
+  assignStatuses,
+  deriveLivingTimeline,
+  headlineFor,
+  withChangeTracking,
+  type LivingTimelineItem,
+} from '../services/timelineService';
+import {
+  createApproval,
+  decideApproval,
+  listApprovals,
+  type Approval,
+} from '../services/approvalService';
+import {
+  listNotifications,
+  markRead,
+  pushNotification,
+  unreadCount,
+  type AppNotification,
+} from '../services/notificationCenterService';
+import { deleteDemoTrip, seedDemoTrip } from '../services/demoTripService';
 import {
   generatePackingList,
   getStoredPackingList,
@@ -39,7 +60,7 @@ import { formatCountdown, formatDate, formatDuration, formatMoney, formatTime } 
 /** Trip dashboard: the "during travel" home for the chosen route. */
 export function DashboardScreen() {
   const insets = useSafeAreaInsets();
-  const { savedTrips, activeTrip, setActiveTrip, deleteTrip } = useTrip();
+  const { savedTrips, activeTrip, setActiveTrip, deleteTrip, refreshTrips } = useTrip();
 
   // Re-render every 30s so the countdown stays fresh.
   const [now, setNow] = useState(new Date());
@@ -123,6 +144,29 @@ export function DashboardScreen() {
           tsaWaitMinutes: tsa?.waitMinutes,
         });
         if (!cancelled) setChanges(log);
+        // In-app notifications, coalesced by topic (one row per subject).
+        let latest: AppNotification[] | undefined;
+        if (status?.important) {
+          latest = await pushNotification({
+            id: `flight:${activeTrip.id}`,
+            tripId: activeTrip.id,
+            title: 'Flight update',
+            body: status.headline,
+            severity: status.status === 'cancelled' ? 'critical' : 'warning',
+            demo: activeTrip.demo,
+          });
+        }
+        if (tsa && tsa.waitMinutes > 25) {
+          latest = await pushNotification({
+            id: `tsa:${activeTrip.id}`,
+            tripId: activeTrip.id,
+            title: 'Security line is long',
+            body: `${tsa.label}. Leave ~${tsa.waitMinutes - 25} min earlier than planned.`,
+            severity: 'warning',
+            demo: activeTrip.demo,
+          });
+        }
+        if (latest && !cancelled) setNotifications(latest);
       }
     };
     poll();
@@ -136,6 +180,89 @@ export function DashboardScreen() {
 
   // --- What changed (persisted per trip) ------------------------------------
   const [changes, setChanges] = useState<TripChange[]>([]);
+
+  // --- Living timeline (Step 1) ---------------------------------------------
+  const [living, setLiving] = useState<LivingTimelineItem[]>([]);
+  useEffect(() => {
+    if (!activeTrip) {
+      setLiving([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const base = deriveLivingTimeline(activeTrip, {
+        flightEstimatedIso: flightStatus?.estimatedIso,
+      });
+      const tracked = await withChangeTracking(activeTrip.id, base);
+      if (!cancelled) setLiving(assignStatuses(tracked, now));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTrip, flightStatus, now]);
+  const headline = headlineFor(living);
+
+  // --- Approvals (Step 3) ----------------------------------------------------
+  const [approvals, setApprovals] = useState<Approval[]>([]);
+  const loadApprovals = () => listApprovals().then(setApprovals);
+  useEffect(() => {
+    loadApprovals();
+  }, [activeTrip?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const decide = async (id: string, decision: 'approved_handoff' | 'rejected') => {
+    const decided = await decideApproval(id, decision);
+    if (decided && decision === 'approved_handoff') {
+      Linking.openURL(decided.handoffUrl);
+    }
+    loadApprovals();
+  };
+
+  // --- Notification center (Step 4) ------------------------------------------
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [showNotifications, setShowNotifications] = useState(false);
+  useEffect(() => {
+    listNotifications().then(setNotifications);
+  }, [activeTrip?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Approval expiring within 24h → one coalesced notification per approval.
+  useEffect(() => {
+    const soon = approvals.filter(
+      (a) =>
+        a.status === 'pending' &&
+        new Date(a.expiresAt).getTime() - Date.now() < 24 * 60 * 60_000 &&
+        new Date(a.expiresAt).getTime() > Date.now(),
+    );
+    (async () => {
+      let latest: AppNotification[] | undefined;
+      for (const a of soon) {
+        latest = await pushNotification({
+          id: `approval-expiring:${a.id}`,
+          tripId: a.tripId,
+          title: 'Approval expiring soon',
+          body: `${a.title} expires ${new Date(a.expiresAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}. Approve or reject it below.`,
+          severity: 'warning',
+          demo: a.demo,
+        });
+      }
+      if (latest) setNotifications(latest);
+    })();
+  }, [approvals]);
+
+  // --- Demo trip (Step 6) ------------------------------------------------------
+  const [seedingDemo, setSeedingDemo] = useState(false);
+  const onSeedDemo = async () => {
+    setSeedingDemo(true);
+    await seedDemoTrip();
+    await refreshTrips();
+    await loadApprovals();
+    setNotifications(await listNotifications());
+    setSeedingDemo(false);
+  };
+  const onDeleteDemo = async () => {
+    await deleteDemoTrip();
+    await refreshTrips();
+    await loadApprovals();
+    setNotifications(await listNotifications());
+  };
+  const isDemo = Boolean(activeTrip?.demo);
 
   // --- Packing list (AI-generated, validated; rules fallback; persisted) ----
   const [packing, setPacking] = useState<PackingList>();
@@ -180,6 +307,19 @@ export function DashboardScreen() {
           title="No trips yet"
           message="Plan a trip and save your favorite route — it will live here with a countdown, timeline, and backup plans."
         />
+        <View style={styles.demoWrap}>
+          <AppButton
+            label={seedingDemo ? 'Setting up the demo…' : 'Try a demo trip'}
+            icon="flask"
+            variant="secondary"
+            disabled={seedingDemo}
+            onPress={onSeedDemo}
+          />
+          <Text style={styles.demoHint}>
+            Seeds a New York → Boston example — every card will be labeled "Demo data" and you can
+            delete it any time.
+          </Text>
+        </View>
       </View>
     );
   }
@@ -213,7 +353,91 @@ export function DashboardScreen() {
       contentContainerStyle={[styles.content, { paddingTop: insets.top + spacing.lg }]}
       showsVerticalScrollIndicator={false}
     >
-      <Text style={styles.screenTitle}>My Trip</Text>
+      <View style={styles.titleRow}>
+        <Text style={styles.screenTitle}>My Trip</Text>
+        <Pressable
+          onPress={() => setShowNotifications((v) => !v)}
+          style={styles.bell}
+          accessibilityLabel={`Notifications, ${unreadCount(notifications)} unread`}
+          accessibilityRole="button"
+        >
+          <Ionicons name="notifications-outline" size={22} color={colors.ink} />
+          {unreadCount(notifications) > 0 && (
+            <View style={styles.bellBadge}>
+              <Text style={styles.bellBadgeText}>{unreadCount(notifications)}</Text>
+            </View>
+          )}
+        </Pressable>
+      </View>
+
+      {/* Notification center (coalesced by topic) */}
+      {showNotifications && (
+        <Card>
+          <SectionHeader
+            title="Notifications"
+            subtitle={notifications.length === 0 ? 'Nothing yet — updates land here' : 'One row per topic, newest first'}
+          />
+          {notifications.map((n) => (
+            <Pressable
+              key={n.id}
+              onPress={() => markRead(n.id).then(setNotifications)}
+              style={[styles.notifRow, !n.read && styles.notifUnread]}
+            >
+              <Ionicons
+                name={n.severity === 'critical' ? 'alert-circle' : n.severity === 'warning' ? 'warning' : 'information-circle'}
+                size={16}
+                color={n.severity === 'critical' ? colors.danger : n.severity === 'warning' ? colors.warning : colors.primary}
+              />
+              <View style={styles.flex}>
+                <Text style={styles.notifTitle}>
+                  {n.title}
+                  {n.updates > 1 ? ` (updated ×${n.updates})` : ''}
+                </Text>
+                <Text style={styles.notifBody}>{n.body}</Text>
+                <Text style={styles.notifTime}>{formatTime(n.updatedAt)}</Text>
+              </View>
+              {!n.read && <View style={styles.notifDot} />}
+            </Pressable>
+          ))}
+        </Card>
+      )}
+
+      {/* Demo labeling + removal */}
+      {isDemo && (
+        <Card style={styles.demoCard}>
+          <DataFreshnessBadge mode="demo" provider="Seeded example trip" />
+          <Text style={styles.demoCardText}>
+            This whole trip is demo data so you can explore. Nothing here is a real reservation.
+          </Text>
+          <AppButton label="Delete demo trip" icon="trash" variant="ghost" small onPress={onDeleteDemo} />
+        </Card>
+      )}
+
+      {/* What you need to know now */}
+      {(headline.current || headline.changed || changes[0]) && (
+        <Card style={styles.knowNowCard}>
+          <Text style={styles.knowNowLabel}>WHAT YOU NEED TO KNOW NOW</Text>
+          {headline.current && (
+            <Text style={styles.knowNowMain}>
+              {headline.current.status === 'now' ? 'Happening now: ' : 'Up next: '}
+              {headline.current.title} · {formatTime(headline.current.time)}
+            </Text>
+          )}
+          {headline.current?.explanation ? (
+            <Text style={styles.knowNowSub}>{headline.current.explanation}</Text>
+          ) : null}
+          {(headline.changed || changes[0]) && (
+            <View style={styles.knowNowChange}>
+              <Ionicons name="swap-horizontal" size={13} color={colors.warning} />
+              <Text style={styles.knowNowChangeText}>
+                {headline.changed
+                  ? `${headline.changed.title} moved from ${formatTime(headline.changed.previousTime!)} to ${formatTime(headline.changed.time)}.`
+                  : changes[0].message}
+              </Text>
+            </View>
+          )}
+        </Card>
+      )}
 
       {/* Countdown hero */}
       <View style={styles.heroCard}>
@@ -413,9 +637,63 @@ export function DashboardScreen() {
       <MapPreview route={route} />
 
       <Card>
-        <SectionHeader title="Timeline" subtitle={`Arrive by ${formatTime(route.arrivalTime)}`} />
-        <TimelineView steps={route.timeline} />
+        <SectionHeader
+          title="Living timeline"
+          subtitle={`Everything from packing to ${activeTrip.hotel ? 'hotel check-in' : 'arrival'} — updates as things change`}
+        />
+        {isDemo && <DataFreshnessBadge mode="demo" provider="Seeded example trip" />}
+        <LivingTimelineView items={living} />
       </Card>
+
+      {/* Approvals: money actions wait for you — approving opens the provider */}
+      {approvals.length > 0 && (
+        <Card>
+          <SectionHeader
+            title="Approvals"
+            subtitle="A2Z never buys anything — approving opens the provider to finish there"
+          />
+          {approvals.slice(0, 5).map((a) => (
+            <View key={a.id} style={styles.approvalRow}>
+              <View style={styles.flex}>
+                <Text style={styles.approvalTitle}>
+                  {a.title}
+                  {a.demo ? '  ·  Demo data' : ''}
+                </Text>
+                <Text style={styles.approvalMeta}>
+                  {a.provider} · {a.amountLabel}
+                  {a.status === 'pending'
+                    ? ` · expires ${new Date(a.expiresAt).toLocaleDateString([], { month: 'short', day: 'numeric' })}`
+                    : ''}
+                </Text>
+                {a.status === 'pending' ? (
+                  <View style={styles.approvalActions}>
+                    <AppButton
+                      label={`Approve — finish on ${a.provider}`}
+                      icon="open-outline"
+                      small
+                      onPress={() => decide(a.id, 'approved_handoff')}
+                    />
+                    <AppButton
+                      label="Reject"
+                      variant="ghost"
+                      small
+                      onPress={() => decide(a.id, 'rejected')}
+                    />
+                  </View>
+                ) : (
+                  <Text style={styles.approvalStatus}>
+                    {a.status === 'approved_handoff'
+                      ? `Handed off to ${a.provider} — complete the purchase there. Not a confirmed booking.`
+                      : a.status === 'rejected'
+                        ? 'Rejected'
+                        : 'Expired'}
+                  </Text>
+                )}
+              </View>
+            </View>
+          ))}
+        </Card>
+      )}
 
       {/* Chosen stay */}
       {activeTrip.hotel && (
@@ -430,11 +708,26 @@ export function DashboardScreen() {
               </Text>
             </View>
             <AppButton
-              label="Book"
+              label="Continue on Booking.com"
               icon="bed"
               variant="secondary"
               small
-              onPress={() => Linking.openURL(activeTrip.hotel!.bookingUrl)}
+              onPress={() => {
+                const h = activeTrip.hotel!;
+                createApproval({
+                  tripId: activeTrip.id,
+                  provider: 'Booking.com',
+                  title: `${h.name} · $${h.pricePerNightUsd}/night`,
+                  description: 'Handed off to Booking.com — finish the reservation there.',
+                  amountLabel: `$${h.pricePerNightUsd} per night (estimate)`,
+                  amountIsEstimate: true,
+                  handoffUrl: h.bookingUrl,
+                  expiresAt: activeTrip.route.departureTime,
+                  status: 'approved_handoff',
+                  demo: activeTrip.demo,
+                }).then(loadApprovals);
+                Linking.openURL(h.bookingUrl);
+              }}
             />
           </View>
         </Card>
@@ -542,6 +835,54 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   content: { padding: spacing.lg, gap: spacing.lg, paddingBottom: spacing.xxxl },
   screenTitle: { ...typography.hero, color: colors.ink },
+  titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  bell: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  bellBadge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: colors.danger,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+  },
+  bellBadgeText: { fontSize: 10, fontWeight: '900', color: '#FFFFFF' },
+  notifRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    alignItems: 'flex-start',
+  },
+  notifUnread: { backgroundColor: colors.primarySoft, borderRadius: radii.md, paddingHorizontal: 6 },
+  notifTitle: { fontSize: 13, fontWeight: '800', color: colors.ink },
+  notifBody: { fontSize: 12, color: colors.textSecondary, lineHeight: 16, marginTop: 1 },
+  notifTime: { fontSize: 10.5, color: colors.textMuted, marginTop: 2 },
+  notifDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.primary, marginTop: 5 },
+  demoWrap: { padding: spacing.xl, gap: spacing.sm },
+  demoHint: { fontSize: 12, color: colors.textMuted, textAlign: 'center', lineHeight: 17 },
+  demoCard: { gap: spacing.sm, borderColor: colors.warning, borderWidth: 1 },
+  demoCardText: { fontSize: 12.5, color: colors.textSecondary, lineHeight: 17 },
+  knowNowCard: { gap: 6, borderColor: colors.primary, borderWidth: 1.5 },
+  knowNowLabel: { fontSize: 10.5, fontWeight: '900', letterSpacing: 0.8, color: colors.primary },
+  knowNowMain: { fontSize: 15, fontWeight: '800', color: colors.ink, lineHeight: 21 },
+  knowNowSub: { fontSize: 12.5, color: colors.textSecondary, lineHeight: 17 },
+  knowNowChange: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 2 },
+  knowNowChangeText: { flex: 1, fontSize: 12.5, color: colors.text, lineHeight: 17, fontWeight: '600' },
+  approvalRow: {
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    flexDirection: 'row',
+  },
+  approvalTitle: { fontSize: 13.5, fontWeight: '700', color: colors.ink, lineHeight: 18 },
+  approvalMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+  approvalActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm, flexWrap: 'wrap' },
+  approvalStatus: { fontSize: 12, color: colors.textMuted, marginTop: 4, lineHeight: 16 },
   statusCard: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   statusCardAlert: { borderColor: colors.danger, borderWidth: 1.5 },
   statusCardOk: { borderColor: colors.success, borderWidth: 1 },

@@ -19,6 +19,8 @@ interface TripContextValue {
   savedTrips: SavedTrip[];
   activeTrip?: SavedTrip;
   saveTrip: (route: RouteOption, hotel?: HotelOption) => Promise<boolean>;
+  /** Re-read saved trips from storage (after out-of-band writes, e.g. demo seed). */
+  refreshTrips: () => Promise<void>;
   deleteTrip: (tripId: string) => Promise<void>;
   setActiveTrip: (trip?: SavedTrip) => void;
 
@@ -69,6 +71,14 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     [search],
   );
 
+  const refreshTrips = useCallback(async () => {
+    const r = await storage.getSavedTrips();
+    if (r.ok) {
+      setSavedTrips(r.data);
+      setActiveTrip((current) => r.data.find((t) => t.id === current?.id) ?? r.data[0]);
+    }
+  }, []);
+
   const deleteTrip = useCallback(async (tripId: string) => {
     await storage.deleteTrip(tripId);
     setSavedTrips((prev) => {
@@ -87,12 +97,13 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
       savedTrips,
       activeTrip,
       saveTrip,
+      refreshTrips,
       deleteTrip,
       setActiveTrip,
       defaultPreference,
       setDefaultPreference,
     }),
-    [search, results, setSearchResults, replaceRoute, savedTrips, activeTrip, saveTrip, deleteTrip, defaultPreference],
+    [search, results, setSearchResults, replaceRoute, savedTrips, activeTrip, saveTrip, refreshTrips, deleteTrip, defaultPreference],
   );
 
   return <TripContext.Provider value={value}>{children}</TripContext.Provider>;

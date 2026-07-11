@@ -12,6 +12,7 @@ import type { PlanStackParamList, RootTabParamList } from './src/navigation/type
 import { DashboardScreen } from './src/screens/DashboardScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { PlannerScreen } from './src/screens/PlannerScreen';
+import { ImportTripScreen } from './src/screens/ImportTripScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
 import { colors } from './src/theme';
 
@@ -31,6 +32,7 @@ function PlanStack() {
     >
       <Stack.Screen name="Home" component={HomeScreen} options={{ headerShown: false }} />
       <Stack.Screen name="Planner" component={PlannerScreen} options={{ headerShown: false }} />
+      <Stack.Screen name="ImportTrip" component={ImportTripScreen} options={{ headerShown: false }} />
     </Stack.Navigator>
   );
 }

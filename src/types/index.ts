@@ -370,6 +370,8 @@ export interface SavedTrip {
   route: RouteOption;
   /** Stay chosen during planning (when the user asked for a hotel). */
   hotel?: HotelOption;
+  /** Seeded demo trip — every card rendering it must show "Demo data". */
+  demo?: boolean;
 }
 
 // ---------------------------------------------------------------------------

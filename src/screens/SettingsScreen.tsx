@@ -9,6 +9,7 @@ import { SectionHeader } from '../components/SectionHeader';
 import { useTrip } from '../context/TripContext';
 import { BUILD_INFO } from '../buildInfo';
 import { apiConfig } from '../services/config';
+import { getAuditLog, type AuditEntry } from '../services/approvalService';
 import * as storage from '../services/storageService';
 import { RIDESHARE_APPS } from '../services/storageService';
 import { colors, spacing, typography } from '../theme';
@@ -39,16 +40,31 @@ export function SettingsScreen() {
     });
   };
 
-  const integrations: Array<{ name: string; configured: boolean; note: string }> = [
-    { name: 'OpenWeather', configured: Boolean(apiConfig.openWeatherApiKey), note: 'Live forecasts' },
-    { name: 'Google Maps', configured: Boolean(apiConfig.googleMapsApiKey), note: 'Directions & transit' },
-    { name: 'Amadeus / Duffel', configured: Boolean(apiConfig.amadeusClientId || apiConfig.duffelApiKey), note: 'Flight search' },
-    { name: 'Rome2Rio', configured: Boolean(apiConfig.rome2RioApiKey), note: 'Multimodal routing' },
-    { name: 'Transitland', configured: Boolean(apiConfig.transitlandApiKey), note: 'GTFS transit feeds' },
-    { name: 'Uber / Lyft', configured: Boolean(apiConfig.uberServerToken || apiConfig.lyftClientId), note: 'Live ride pricing' },
-    { name: 'aviationstack', configured: Boolean(apiConfig.aviationstackApiKey), note: 'Real-time flight status alerts' },
-    { name: 'TSA Wait Times', configured: Boolean(apiConfig.tsaWaitApiKey), note: 'Live security lines → leave-by advice' },
+  type ConnState = 'working' | 'configured' | 'not_configured' | 'partnership';
+  const keyed = (configured: boolean): ConnState => (configured ? 'configured' : 'not_configured');
+  const connections: Array<{ name: string; state: ConnState; note: string; envVar?: string }> = [
+    { name: 'Weather (Open-Meteo)', state: 'working', note: 'Real forecasts for your travel dates — shapes walk-vs-ride advice.' },
+    { name: 'Road routing (OSRM + Nominatim)', state: 'working', note: 'Real driving distances and address lookup.' },
+    { name: 'Transit routing (Transitous)', state: 'working', note: 'Real subway/bus itineraries from public GTFS feeds.' },
+    { name: 'Uber / Lyft handoff', state: 'working', note: 'Opens the ride app with pickup & drop-off already filled.' },
+    { name: 'Google Routes', state: keyed(Boolean(apiConfig.googleMapsApiKey)), envVar: 'EXPO_PUBLIC_GOOGLE_MAPS_API_KEY', note: 'Sharper transit routes with real fares and clock times.' },
+    { name: 'Anthropic (Claude)', state: keyed(Boolean(process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY)), envVar: 'EXPO_PUBLIC_ANTHROPIC_API_KEY', note: 'AI concierge, packing lists, ride-price calibration, trip import.' },
+    { name: 'aviationstack', state: keyed(Boolean(apiConfig.aviationstackApiKey)), envVar: 'EXPO_PUBLIC_AVIATIONSTACK_API_KEY', note: 'Real-time flight delay/cancellation/gate alerts.' },
+    { name: 'TSA Wait Times', state: keyed(Boolean(apiConfig.tsaWaitApiKey)), envVar: 'EXPO_PUBLIC_TSA_WAIT_API_KEY', note: 'Live security lines feeding the leave-by advice.' },
+    { name: 'Amadeus', state: keyed(Boolean(apiConfig.amadeusClientId)), envVar: 'EXPO_PUBLIC_AMADEUS_CLIENT_ID', note: 'Live airline fares on the ticket board.' },
+    { name: 'In-app ticket purchase', state: 'partnership', note: 'Buying flights/hotels inside A2Z requires commercial provider agreements — not possible in a client-only app. A2Z hands you to the provider instead.' },
   ];
+  const CONN_LABEL: Record<ConnState, string> = {
+    working: 'Working (keyless)',
+    configured: 'Configured',
+    not_configured: 'Not configured',
+    partnership: 'Requires partnership',
+  };
+
+  const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
+  useEffect(() => {
+    getAuditLog().then(setAuditLog);
+  }, []);
 
   return (
     <ScrollView
@@ -113,31 +129,77 @@ export function SettingsScreen() {
 
       <Card>
         <SectionHeader
-          title="Data sources"
-          subtitle={`Mode: ${apiConfig.mode === 'mock' ? 'Demo (mock data)' : 'Live APIs'}`}
+          title="Connections"
+          subtitle="What each data source really is — no pretend integrations"
         />
         <View style={styles.integrationStack}>
-          {integrations.map((i) => (
+          {connections.map((i) => (
             <View key={i.name} style={styles.integrationRow}>
               <Ionicons
-                name={i.configured ? 'checkmark-circle' : 'ellipse-outline'}
+                name={
+                  i.state === 'working' || i.state === 'configured'
+                    ? 'checkmark-circle'
+                    : i.state === 'partnership'
+                      ? 'business-outline'
+                      : 'ellipse-outline'
+                }
                 size={18}
-                color={i.configured ? colors.success : colors.textMuted}
+                color={
+                  i.state === 'working' || i.state === 'configured'
+                    ? colors.success
+                    : colors.textMuted
+                }
               />
               <View style={styles.flex}>
                 <Text style={styles.integrationName}>{i.name}</Text>
-                <Text style={styles.integrationNote}>{i.note}</Text>
+                <Text style={styles.integrationNote}>
+                  {i.note}
+                  {i.state === 'not_configured' && i.envVar
+                    ? ` Add ${i.envVar} on Vercel to enable.`
+                    : ''}
+                </Text>
               </View>
-              <Text style={[styles.integrationState, i.configured && styles.integrationLive]}>
-                {i.configured ? 'Configured' : 'Mock'}
+              <Text
+                style={[
+                  styles.integrationState,
+                  (i.state === 'working' || i.state === 'configured') && styles.integrationLive,
+                ]}
+              >
+                {CONN_LABEL[i.state]}
               </Text>
             </View>
           ))}
         </View>
         <Text style={styles.envHint}>
-          Add API keys in a local .env file (see .env.example). Keys are read from environment
-          variables — nothing is hardcoded.
+          Keys live in environment variables (see SETUP_REAL_DATA.md) — nothing is hardcoded, and
+          nothing shows "Live" unless a real provider answered.
         </Text>
+      </Card>
+
+      <Card>
+        <SectionHeader
+          title="Activity log"
+          subtitle="Every recommendation change, approval, and handoff — newest first"
+        />
+        {auditLog.length === 0 ? (
+          <Text style={styles.aboutText}>Nothing yet — activity appears as you plan and book.</Text>
+        ) : (
+          auditLog.slice(0, 15).map((e, i) => (
+            <View key={`${e.at}-${i}`} style={styles.auditRow}>
+              <Ionicons
+                name={e.actor === 'user' ? 'person-circle-outline' : 'cog-outline'}
+                size={15}
+                color={colors.textMuted}
+              />
+              <View style={styles.flex}>
+                <Text style={styles.auditSummary}>{e.summary}</Text>
+                <Text style={styles.auditMeta}>
+                  {new Date(e.at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · {e.action}
+                </Text>
+              </View>
+            </View>
+          ))
+        )}
       </Card>
 
       <Card>
@@ -172,6 +234,16 @@ const styles = StyleSheet.create({
   integrationNote: { fontSize: 12, color: colors.textMuted },
   integrationState: { fontSize: 12, fontWeight: '700', color: colors.textMuted },
   integrationLive: { color: colors.success },
+  auditRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    alignItems: 'flex-start',
+  },
+  auditSummary: { fontSize: 12.5, color: colors.text, lineHeight: 17 },
+  auditMeta: { fontSize: 10.5, color: colors.textMuted, marginTop: 1 },
   envHint: {
     marginTop: spacing.md,
     fontSize: 12,

@@ -35,6 +35,7 @@ import {
   buildUberLink,
 } from '../services/deepLinkService';
 import { aiConfigured, generateConciergePlan } from '../services/aiService';
+import { audit, createApproval } from '../services/approvalService';
 import { openBookingLink } from '../components/BookingLinks';
 import { CORRIDOR_CITIES, resolveCorridor } from '../data/cities';
 import {
@@ -192,7 +193,9 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
   const [homePlace, setHomePlace] = useState<Place>();
   const [locating, setLocating] = useState(false);
   const [stepError, setStepError] = useState<string>();
-  const [date, setDate] = useState<Date>();
+  const [date, setDate] = useState<Date | undefined>(() =>
+    route.params?.importedDate ? new Date(`${route.params.importedDate}T12:00:00`) : undefined,
+  );
   const [timeOfDay, setTimeOfDay] = useState<TimeOfDay>();
   const [travelers, setTravelers] = useState(1);
   const [bags, setBags] = useState(1);
@@ -623,6 +626,27 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
     return purchaseLinkFor(t);
   };
 
+  /** Every money action leaves an approval record (honest handoff, Step 3). */
+  const recordTicketApproval = (t: TicketOption, status: 'pending' | 'approved_handoff') => {
+    const link = exactBookingLinkFor(t);
+    createApproval({
+      provider: link?.provider ?? t.haul.provider,
+      title: `${t.haul.provider} ${t.haul.serviceName} · ${t.haul.fromStation} → ${t.haul.toStation}`,
+      description:
+        status === 'pending'
+          ? `Approving opens ${link?.provider ?? 'the provider'} to finish the purchase there.`
+          : `Handed off to ${link?.provider ?? 'the provider'} — finish the purchase there.`,
+      amountLabel:
+        t.farePerPersonUsd !== undefined
+          ? `$${t.farePerPersonUsd} per person (estimate)`
+          : 'Price shown by the provider',
+      amountIsEstimate: true,
+      handoffUrl: link?.webUrl ?? t.haul.bookingUrl,
+      expiresAt: t.departureTime,
+      status,
+    });
+  };
+
   const chooseTicket = (t: TicketOption, intent: 'now' | 'end' | 'later', openDefault = true) => {
     setTicket(t);
     setDirectRoute(undefined);
@@ -639,6 +663,10 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
       // Automatically open the booking page with this exact flight/train.
       const link = exactBookingLinkFor(t);
       if (link) openBookingLink(link);
+      recordTicketApproval(t, 'approved_handoff');
+      audit('user', 'handoff.opened', `Opened ${link?.provider ?? t.haul.provider} for ${t.haul.serviceName} — purchase finishes on the provider`);
+    } else if (intent === 'end') {
+      recordTicketApproval(t, 'pending');
     }
     setTimeout(goNext, 100);
   };
