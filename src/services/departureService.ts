@@ -19,6 +19,11 @@ export interface DepartureRecommendationInput {
   checksBag: boolean;
   airportArrivalPreferenceMinutes?: number | null;
   routeConfidence: 'high' | 'medium' | 'low';
+  /** Replaces the 120/180-min base lead time (e.g. the user's own airport
+   * buffer from Settings). Adjustments and floors still apply. */
+  baseLeadOverrideMinutes?: number | null;
+  /** Replaces the confidence-derived uncertainty buffer when set. */
+  uncertaintyOverrideMinutes?: number | null;
 }
 
 export interface DepartureFactor {
@@ -44,6 +49,8 @@ const PRECHECK_SAVINGS_MINUTES = -15;
 const CLEAR_SAVINGS_MINUTES = -5;
 /** Lead time never drops below this, no matter how many programs you have. */
 const SAFE_MINIMUM_LEAD_MINUTES = 75;
+/** International floor is higher — document checks can't be pre-cleared. */
+const INTERNATIONAL_MINIMUM_LEAD_MINUTES = 120;
 const CONFIDENCE_BUFFER: Record<DepartureRecommendationInput['routeConfidence'], number> = {
   high: 5,
   medium: 10,
@@ -76,10 +83,15 @@ export function recommendDeparture(
   }
 
   // Airport lead time: base + itemized adjustments, floored at the safe minimum.
-  let lead = input.isInternational ? INTERNATIONAL_BASE_MINUTES : DOMESTIC_BASE_MINUTES;
+  const defaultBase = input.isInternational ? INTERNATIONAL_BASE_MINUTES : DOMESTIC_BASE_MINUTES;
+  const baseOverride = input.baseLeadOverrideMinutes ?? undefined;
+  let lead = baseOverride ?? defaultBase;
   factors.push({
     label: input.isInternational ? 'International flight' : 'Domestic flight',
-    value: `${lead} min base airport lead time`,
+    value:
+      baseOverride !== undefined && baseOverride !== defaultBase
+        ? `${lead} min airport lead time (your setting; default ${defaultBase})`
+        : `${lead} min base airport lead time`,
     impactMinutes: lead,
   });
   if (input.checksBag) {
@@ -102,13 +114,14 @@ export function recommendDeparture(
       impactMinutes: input.airportArrivalPreferenceMinutes,
     });
   }
-  if (lead < SAFE_MINIMUM_LEAD_MINUTES) {
+  const floor = input.isInternational ? INTERNATIONAL_MINIMUM_LEAD_MINUTES : SAFE_MINIMUM_LEAD_MINUTES;
+  if (lead < floor) {
     factors.push({
       label: 'Safety floor',
-      value: `Lead time raised to the ${SAFE_MINIMUM_LEAD_MINUTES}-min safe minimum`,
-      impactMinutes: SAFE_MINIMUM_LEAD_MINUTES - lead,
+      value: `Lead time raised to the ${floor}-min ${input.isInternational ? 'international' : ''} safe minimum`.replace('  ', ' '),
+      impactMinutes: floor - lead,
     });
-    lead = SAFE_MINIMUM_LEAD_MINUTES;
+    lead = floor;
   }
 
   // Route time: live traffic duration when available, otherwise baseline.
@@ -122,10 +135,14 @@ export function recommendDeparture(
     });
   }
 
-  // Uncertainty buffer scales with how much we trust the route estimate.
-  const buffer = CONFIDENCE_BUFFER[input.routeConfidence];
+  // Uncertainty buffer scales with how much we trust the route estimate,
+  // unless the user set their own preference in Settings.
+  const buffer = input.uncertaintyOverrideMinutes ?? CONFIDENCE_BUFFER[input.routeConfidence];
   factors.push({
-    label: `Route confidence: ${input.routeConfidence}`,
+    label:
+      input.uncertaintyOverrideMinutes != null
+        ? 'Your uncertainty setting'
+        : `Route confidence: ${input.routeConfidence}`,
     value: `${buffer} min uncertainty buffer`,
     impactMinutes: buffer,
   });

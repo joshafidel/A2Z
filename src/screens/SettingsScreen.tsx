@@ -1,8 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { AppButton } from '../components/AppButton';
 import { Card } from '../components/Card';
 import { Chip } from '../components/Chip';
 import { SectionHeader } from '../components/SectionHeader';
@@ -10,9 +11,17 @@ import { useTrip } from '../context/TripContext';
 import { BUILD_INFO } from '../buildInfo';
 import { apiConfig } from '../services/config';
 import { getAuditLog, type AuditEntry } from '../services/approvalService';
+import {
+  DEFAULT_PROFILE,
+  getProfile,
+  saveProfile,
+  type TransportationPriority,
+  type TravelerProfile,
+} from '../services/preferencesService';
 import * as storage from '../services/storageService';
 import { RIDESHARE_APPS } from '../services/storageService';
-import { colors, spacing, typography } from '../theme';
+import { colors, radii, spacing, typography } from '../theme';
+import { confirmAction } from '../utils/confirm';
 import { PREFERENCE_LABELS, type TravelPreference } from '../types';
 
 const RIDESHARE_META: Record<string, { icon: keyof typeof Ionicons.glyphMap; note: string }> = {
@@ -25,8 +34,74 @@ const RIDESHARE_META: Record<string, { icon: keyof typeof Ionicons.glyphMap; not
 /** Settings / preferences: default optimization + integration status. */
 export function SettingsScreen() {
   const insets = useSafeAreaInsets();
-  const { defaultPreference, setDefaultPreference, savedTrips } = useTrip();
+  const { defaultPreference, setDefaultPreference, savedTrips, refreshTrips } = useTrip();
   const [connectedApps, setConnectedApps] = useState<string[]>([...RIDESHARE_APPS]);
+
+  // --- Traveler profile ------------------------------------------------------
+  const [profile, setProfile] = useState<TravelerProfile>(DEFAULT_PROFILE);
+  useEffect(() => {
+    getProfile().then(setProfile);
+  }, []);
+  const patchProfile = (patch: Partial<TravelerProfile>) => {
+    setProfile((prev) => {
+      const next = { ...prev, ...patch };
+      saveProfile(next);
+      return next;
+    });
+  };
+
+  // --- Data management: export / import / reset --------------------------------
+  const [dataMessage, setDataMessage] = useState<string>();
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState('');
+
+  const onExport = async () => {
+    const result = await storage.exportAllData();
+    if (!result.ok) {
+      setDataMessage(result.error);
+      return;
+    }
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      const blob = new Blob([result.data], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `a2z-trips-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setDataMessage('Downloaded your data as a JSON file — keep it somewhere safe.');
+    } else {
+      setDataMessage('Export is available in the web version of A2Z.');
+    }
+  };
+
+  const onImport = async () => {
+    const result = await storage.importAllData(importText);
+    if (!result.ok) {
+      setDataMessage(result.error);
+      return;
+    }
+    setDataMessage(
+      `Imported ${result.data.trips} trip${result.data.trips === 1 ? '' : 's'} across ${result.data.keys} data sections.`,
+    );
+    setImportOpen(false);
+    setImportText('');
+    setProfile(await getProfile());
+    await refreshTrips();
+  };
+
+  const onReset = () => {
+    confirmAction(
+      'Delete ALL A2Z data?',
+      'Every trip, packing list, approval, and setting stored in this browser will be permanently removed. Export first if you want a backup.',
+      async () => {
+        await storage.resetAllData();
+        setProfile({ ...DEFAULT_PROFILE });
+        setDataMessage('All data was removed from this browser.');
+        await refreshTrips();
+      },
+    );
+  };
 
   useEffect(() => {
     storage.getConnectedRideshareApps().then(setConnectedApps);
@@ -89,6 +164,123 @@ export function SettingsScreen() {
             />
           ))}
         </View>
+      </Card>
+
+      <Card>
+        <SectionHeader
+          title="Traveler profile"
+          subtitle="Shapes the leave-time estimate, packing list, and transport comparison"
+        />
+        {(
+          [
+            ['TSA PreCheck', 'hasTsaPrecheck'],
+            ['CLEAR', 'hasClear'],
+            ['I usually check a bag', 'usuallyChecksBag'],
+          ] as const
+        ).map(([label, key]) => (
+          <Pressable
+            key={key}
+            onPress={() => patchProfile({ [key]: !profile[key] } as Partial<TravelerProfile>)}
+            style={styles.integrationRow}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: profile[key] }}
+          >
+            <Text style={[styles.integrationName, styles.flex]}>{label}</Text>
+            <Ionicons
+              name={profile[key] ? 'checkmark-circle' : 'ellipse-outline'}
+              size={22}
+              color={profile[key] ? colors.success : colors.textMuted}
+            />
+          </Pressable>
+        ))}
+        {(
+          [
+            ['Domestic airport buffer', 'domesticBufferMinutes', 15, 75, 240],
+            ['International airport buffer', 'internationalBufferMinutes', 15, 120, 300],
+            ['Traffic uncertainty', 'trafficUncertaintyMinutes', 5, 0, 60],
+          ] as const
+        ).map(([label, key, step, min, max]) => (
+          <View key={key} style={styles.stepperRow}>
+            <Text style={styles.stepperLabel}>{label}</Text>
+            <View style={styles.stepperControls}>
+              <Pressable
+                onPress={() => patchProfile({ [key]: Math.max(min, profile[key] - step) } as Partial<TravelerProfile>)}
+                style={styles.stepperButton}
+                accessibilityLabel={`Decrease ${label}`}
+                accessibilityRole="button"
+              >
+                <Ionicons name="remove" size={16} color={colors.primary} />
+              </Pressable>
+              <Text style={styles.stepperValue}>{profile[key]} min</Text>
+              <Pressable
+                onPress={() => patchProfile({ [key]: Math.min(max, profile[key] + step) } as Partial<TravelerProfile>)}
+                style={styles.stepperButton}
+                accessibilityLabel={`Increase ${label}`}
+                accessibilityRole="button"
+              >
+                <Ionicons name="add" size={16} color={colors.primary} />
+              </Pressable>
+            </View>
+          </View>
+        ))}
+        <Text style={styles.fieldHint}>Temperature unit</Text>
+        <View style={styles.prefGrid}>
+          {(['fahrenheit', 'celsius'] as const).map((u) => (
+            <Chip
+              key={u}
+              label={u === 'fahrenheit' ? '°F' : '°C'}
+              selected={profile.temperatureUnit === u}
+              onPress={() => patchProfile({ temperatureUnit: u })}
+            />
+          ))}
+        </View>
+        <Text style={styles.fieldHint}>Transportation priority</Text>
+        <View style={styles.prefGrid}>
+          {(['cheapest', 'balanced', 'fastest'] as TransportationPriority[]).map((p) => (
+            <Chip
+              key={p}
+              label={p[0].toUpperCase() + p.slice(1)}
+              selected={profile.transportationPriority === p}
+              onPress={() => patchProfile({ transportationPriority: p })}
+            />
+          ))}
+        </View>
+      </Card>
+
+      <Card>
+        <SectionHeader
+          title="Your data"
+          subtitle="Trips and settings are stored in this browser only — they are not synchronized across devices"
+        />
+        <View style={styles.dataActions}>
+          <AppButton label="Export data" icon="download-outline" variant="secondary" small onPress={onExport} />
+          <AppButton
+            label={importOpen ? 'Cancel import' : 'Import data'}
+            icon="cloud-upload-outline"
+            variant="secondary"
+            small
+            onPress={() => setImportOpen((v) => !v)}
+          />
+          <AppButton label="Reset all data" icon="trash-outline" variant="ghost" small onPress={onReset} />
+        </View>
+        {importOpen && (
+          <View style={styles.importWrap}>
+            <TextInput
+              style={styles.importInput}
+              multiline
+              value={importText}
+              onChangeText={setImportText}
+              placeholder="Paste the contents of an A2Z export file here…"
+              placeholderTextColor={colors.textMuted}
+              accessibilityLabel="Paste exported A2Z JSON"
+            />
+            <AppButton label="Import this data" icon="checkmark" small onPress={onImport} />
+            <Text style={styles.fieldHint}>
+              Importing replaces everything currently stored in this browser.
+            </Text>
+          </View>
+        )}
+        {dataMessage ? <Text style={styles.dataMessage}>{dataMessage}</Text> : null}
       </Card>
 
       <Card>
@@ -203,6 +395,25 @@ export function SettingsScreen() {
       </Card>
 
       <Card>
+        <SectionHeader
+          title="What needs a backend (honestly)"
+          subtitle="These are not switched off — they are impossible in a static site"
+        />
+        {[
+          'Email trip import requires a backend and OAuth.',
+          'Automatic flight monitoring requires a secure backend.',
+          'Account syncing requires user authentication.',
+          'Automatic booking requires commercial provider access.',
+          'Cross-device sync requires a database.',
+        ].map((line) => (
+          <View key={line} style={styles.futureRow}>
+            <Ionicons name="lock-closed-outline" size={13} color={colors.textMuted} />
+            <Text style={styles.futureText}>{line}</Text>
+          </View>
+        ))}
+      </Card>
+
+      <Card>
         <SectionHeader title="About A2Z" />
         <Text style={styles.aboutText}>
           A2Z plans your whole journey — from your front door to your final destination — across
@@ -252,4 +463,40 @@ const styles = StyleSheet.create({
   },
   aboutText: { fontSize: 14, color: colors.textSecondary, lineHeight: 20 },
   aboutMeta: { marginTop: spacing.md, fontSize: 12, color: colors.textMuted },
+  stepperRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+    gap: spacing.md,
+  },
+  stepperLabel: { flex: 1, fontSize: 13.5, fontWeight: '600', color: colors.text },
+  stepperControls: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  stepperButton: {
+    width: 32,
+    height: 32,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepperValue: { fontSize: 13, fontWeight: '700', color: colors.ink, minWidth: 58, textAlign: 'center' },
+  fieldHint: { fontSize: 12, fontWeight: '700', color: colors.textSecondary, marginTop: spacing.md, marginBottom: 6 },
+  dataActions: { flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' },
+  importWrap: { gap: spacing.sm, marginTop: spacing.md },
+  importInput: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    padding: spacing.md,
+    minHeight: 110,
+    fontSize: 12,
+    color: colors.text,
+    textAlignVertical: 'top',
+    backgroundColor: colors.surface,
+  },
+  dataMessage: { fontSize: 12.5, fontWeight: '600', color: colors.text, marginTop: spacing.sm, lineHeight: 17 },
+  futureRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-start', paddingVertical: 4 },
+  futureText: { flex: 1, fontSize: 12.5, color: colors.textSecondary, lineHeight: 17 },
 });

@@ -4,7 +4,7 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import { colors, radii } from '../theme';
 
-export type DataMode = 'live' | 'demo' | 'unavailable';
+export type DataMode = 'live' | 'demo' | 'unavailable' | 'user' | 'estimate';
 
 /**
  * Trust badge for every external-data card: LIVE only when the value came
@@ -28,11 +28,15 @@ export function DataFreshnessBadge({
       ? { label: 'LIVE', color: colors.success, icon: 'radio-outline' as const }
       : mode === 'demo'
         ? { label: 'DEMO DATA', color: colors.warning, icon: 'flask-outline' as const }
-        : { label: 'UNAVAILABLE', color: colors.textMuted, icon: 'cloud-offline-outline' as const };
+        : mode === 'user'
+          ? { label: 'ENTERED BY YOU', color: colors.primary, icon: 'person-outline' as const }
+          : mode === 'estimate'
+            ? { label: 'ESTIMATE', color: colors.primary, icon: 'calculator-outline' as const }
+            : { label: 'UNAVAILABLE', color: colors.textMuted, icon: 'cloud-offline-outline' as const };
   const verified =
     mode === 'live' && lastVerifiedAt
       ? ` · ${provider} · ${new Date(lastVerifiedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
-      : mode === 'demo'
+      : mode === 'demo' || mode === 'user' || mode === 'estimate'
         ? ` · ${provider}`
         : '';
   return (

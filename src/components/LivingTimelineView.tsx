@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { LivingTimelineItem } from '../services/timelineService';
 import { colors, radii, spacing } from '../theme';
@@ -18,8 +18,20 @@ const STATUS_META: Record<
   changed: { label: 'CHANGED', color: colors.warning },
 };
 
-/** The living timeline: statuses, sources, changes with previous times. */
-export function LivingTimelineView({ items }: { items: LivingTimelineItem[] }) {
+/**
+ * The living timeline: statuses, sources, changes with previous times.
+ * When the editing callbacks are provided, each row grows a "mark done /
+ * undo" toggle and a remove button (generated items are restorable).
+ */
+export function LivingTimelineView({
+  items,
+  onToggleComplete,
+  onRemove,
+}: {
+  items: LivingTimelineItem[];
+  onToggleComplete?: (id: string, currentlyCompleted: boolean) => void;
+  onRemove?: (id: string) => void;
+}) {
   return (
     <View style={styles.container}>
       {items.map((item, i) => {
@@ -69,6 +81,35 @@ export function LivingTimelineView({ items }: { items: LivingTimelineItem[] }) {
                 {item.previousTime ? ` · was ${formatTime(item.previousTime)}` : ''}
               </Text>
             </View>
+
+            {(onToggleComplete || onRemove) && (
+              <View style={styles.rowActions}>
+                {onToggleComplete && (
+                  <Pressable
+                    onPress={() => onToggleComplete(item.id, done)}
+                    style={styles.rowAction}
+                    accessibilityLabel={done ? `Mark ${item.title} not done` : `Mark ${item.title} done`}
+                    accessibilityRole="button"
+                  >
+                    <Ionicons
+                      name={done ? 'checkbox' : 'square-outline'}
+                      size={17}
+                      color={done ? colors.success : colors.textMuted}
+                    />
+                  </Pressable>
+                )}
+                {onRemove && (
+                  <Pressable
+                    onPress={() => onRemove(item.id)}
+                    style={styles.rowAction}
+                    accessibilityLabel={`Remove ${item.title} from the timeline`}
+                    accessibilityRole="button"
+                  >
+                    <Ionicons name="close" size={15} color={colors.textMuted} />
+                  </Pressable>
+                )}
+              </View>
+            )}
           </View>
         );
       })}
@@ -100,4 +141,6 @@ const styles = StyleSheet.create({
   statusTagText: { fontSize: 9, fontWeight: '900', color: '#FFFFFF', letterSpacing: 0.5 },
   explanation: { fontSize: 12, color: colors.textSecondary, marginTop: 2, lineHeight: 16 },
   source: { fontSize: 10.5, color: colors.textMuted, marginTop: 3 },
+  rowActions: { flexDirection: 'row', alignItems: 'flex-start', gap: 2 },
+  rowAction: { padding: 6, minWidth: 30, minHeight: 30, alignItems: 'center', justifyContent: 'center' },
 });

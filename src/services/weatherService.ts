@@ -13,7 +13,9 @@
  * plugs in here the same way.
  */
 
-import type { ServiceResult, WeatherCondition, WeatherKind } from '../types';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+import type { ExpectedConditions, ServiceResult, WeatherCondition, WeatherKind } from '../types';
 import { fetchWithTimeout, liveDataEnabled, mockDelay } from './config';
 import { geocode } from './geoService';
 
@@ -193,6 +195,98 @@ const MOCK_FORECASTS: Record<string, WeatherFacts[]> = {
 function dayOfYear(date: Date): number {
   const start = Date.UTC(date.getUTCFullYear(), 0, 0);
   return Math.floor((date.getTime() - start) / 86_400_000);
+}
+
+// ---------------------------------------------------------------------------
+// Per-trip snapshot: the last successful forecast, with when it was
+// checked — so the card can say "Last checked 4:12 PM" and never claim a
+// stale value is current.
+// ---------------------------------------------------------------------------
+
+const SNAPSHOT_KEY = '@a2z/weather-snapshots';
+
+export interface WeatherSnapshot {
+  condition: WeatherCondition;
+  checkedAt: string; // ISO
+}
+
+export async function getStoredWeatherSnapshot(tripId: string): Promise<WeatherSnapshot | undefined> {
+  try {
+    const raw = await AsyncStorage.getItem(SNAPSHOT_KEY);
+    const all = raw ? (JSON.parse(raw) as Record<string, WeatherSnapshot>) : {};
+    return all[tripId];
+  } catch {
+    return undefined;
+  }
+}
+
+export async function storeWeatherSnapshot(
+  tripId: string,
+  condition: WeatherCondition,
+): Promise<WeatherSnapshot> {
+  const snapshot: WeatherSnapshot = { condition, checkedAt: new Date().toISOString() };
+  try {
+    const raw = await AsyncStorage.getItem(SNAPSHOT_KEY);
+    const all = raw ? (JSON.parse(raw) as Record<string, WeatherSnapshot>) : {};
+    all[tripId] = snapshot;
+    await AsyncStorage.setItem(SNAPSHOT_KEY, JSON.stringify(all));
+  } catch {
+    // best effort
+  }
+  return snapshot;
+}
+
+// ---------------------------------------------------------------------------
+// Manual fallback: when no forecast is available (trip too far out, or the
+// network failed), the user picks rough conditions and packing/advice use
+// this synthetic condition — always labeled "Entered by you", never live.
+// ---------------------------------------------------------------------------
+
+const EXPECTED_FACTS: Record<ExpectedConditions, WeatherFacts> = {
+  hot: { kind: 'heat', tempF: 92, precipChance: 10, windMph: 6, summary: 'Hot (your estimate)' },
+  mild: { kind: 'clear', tempF: 70, precipChance: 10, windMph: 8, summary: 'Mild (your estimate)' },
+  cold: { kind: 'cold', tempF: 30, precipChance: 15, windMph: 10, summary: 'Cold (your estimate)' },
+  rainy: { kind: 'rain', tempF: 55, precipChance: 80, windMph: 12, summary: 'Rainy (your estimate)' },
+  snowy: { kind: 'snow', tempF: 28, precipChance: 70, windMph: 12, summary: 'Snowy (your estimate)' },
+  mixed: { kind: 'clouds', tempF: 60, precipChance: 45, windMph: 10, summary: 'Mixed (your estimate)' },
+};
+
+/** Build a WeatherCondition from the user's expected-conditions pick. */
+export function conditionFromExpected(
+  expected: ExpectedConditions,
+  cityName: string,
+): WeatherCondition {
+  return toCondition(cityName, EXPECTED_FACTS[expected]);
+}
+
+/**
+ * Live-only fetch: returns the real Open-Meteo forecast or an honest
+ * failure — never a mock. Used by the trip weather card, which must show
+ * "unavailable" (with the manual fallback) rather than pretend.
+ */
+export async function getLiveWeatherOnly(
+  cityName: string,
+  dateIso: string,
+): Promise<ServiceResult<WeatherCondition>> {
+  const date = new Date(dateIso);
+  if (Number.isNaN(date.getTime())) {
+    return { ok: false, error: 'Invalid date for weather lookup', code: 'NOT_FOUND' };
+  }
+  const dayDiff = Math.floor((date.getTime() - Date.now()) / 86_400_000);
+  if (dayDiff > 15) {
+    return {
+      ok: false,
+      error: 'This date is beyond the 16-day forecast range.',
+      code: 'NOT_FOUND',
+    };
+  }
+  if (!liveDataEnabled()) {
+    return { ok: false, error: 'Live data is turned off in this build.', code: 'CONFIG' };
+  }
+  const live = await fetchLiveWeather(cityName, dateIso);
+  return live
+    ? { ok: true, data: live }
+    : { ok: false, error: 'Could not reach the forecast service.', code: 'NETWORK' };
 }
 
 // ---------------------------------------------------------------------------

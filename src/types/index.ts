@@ -360,6 +360,88 @@ export interface HotelOption {
 }
 
 // ---------------------------------------------------------------------------
+// Manual trips — created by the user on the Create Trip form. Everything
+// here is user-provided, and the UI labels it that way.
+// ---------------------------------------------------------------------------
+
+export type ManualTripPurpose = 'business' | 'vacation' | 'weekend' | 'family' | 'event' | 'other';
+
+export const MANUAL_PURPOSE_LABELS: Record<ManualTripPurpose, string> = {
+  business: 'Business',
+  vacation: 'Vacation',
+  weekend: 'Weekend',
+  family: 'Family',
+  event: 'Event',
+  other: 'Other',
+};
+
+export type ManualFlightStatus = 'scheduled' | 'delayed' | 'cancelled' | 'landed' | 'unknown';
+
+/** Rough conditions the user picks when no forecast is available. */
+export type ExpectedConditions = 'hot' | 'mild' | 'cold' | 'rainy' | 'snowy' | 'mixed';
+
+export const EXPECTED_CONDITIONS_LABELS: Record<ExpectedConditions, string> = {
+  hot: 'Hot',
+  mild: 'Mild',
+  cold: 'Cold',
+  rainy: 'Rainy',
+  snowy: 'Snowy',
+  mixed: 'Mixed',
+};
+
+export interface ManualFlightInfo {
+  airlineName?: string;
+  flightNumber?: string;
+  scheduledDepartureAt: string; // ISO
+  scheduledArrivalAt?: string; // ISO
+  terminal?: string;
+  gate?: string;
+  /** Set by the user on the trip page — never claimed to be live. */
+  status: ManualFlightStatus;
+  /** User-entered estimate; moves boarding + the leave recommendation. */
+  estimatedDepartureAt?: string; // ISO
+}
+
+export interface ManualLodgingInfo {
+  propertyName: string;
+  address?: string;
+  checkInAt?: string; // ISO
+  checkOutAt?: string; // ISO
+  bookingUrl?: string;
+}
+
+export interface ManualDeparturePlan {
+  startingLocation: string;
+  estimatedTravelMinutes: number;
+  /** Total travel minutes right now, if the user checked a maps app. */
+  currentTrafficMinutes?: number;
+  /** Overrides the default airport lead time when set. */
+  airportBufferMinutes?: number;
+}
+
+export interface ManualTripDetails {
+  name: string;
+  purpose: ManualTripPurpose;
+  originCity: string;
+  originAirportCode?: string;
+  destinationCity: string;
+  destinationAirportCode?: string;
+  isInternational: boolean;
+  checkedBag: boolean;
+  hasTsaPrecheck: boolean;
+  hasClear: boolean;
+  startsAt: string; // ISO — departure date & time
+  endsAt?: string; // ISO — return / end date
+  flight?: ManualFlightInfo;
+  lodging?: ManualLodgingInfo;
+  departure: ManualDeparturePlan;
+  /** User-picked conditions when the forecast is unavailable. */
+  expectedConditions?: ExpectedConditions;
+  /** Free notes — including any reservation text the user pasted. */
+  notes?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Saved trips
 // ---------------------------------------------------------------------------
 
@@ -372,6 +454,9 @@ export interface SavedTrip {
   hotel?: HotelOption;
   /** Seeded demo trip — every card rendering it must show "Demo data". */
   demo?: boolean;
+  /** Present when the trip was created/edited on the manual Create Trip
+   * form; the route is synthesized from these user-provided fields. */
+  manual?: ManualTripDetails;
 }
 
 // ---------------------------------------------------------------------------

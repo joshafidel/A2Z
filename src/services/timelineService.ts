@@ -125,6 +125,31 @@ export function deriveLivingTimeline(
     });
   }
 
+  // Manual trips: lodging details the user typed in.
+  const lodging = trip.manual?.lodging;
+  if (lodging?.checkInAt) {
+    items.push({
+      id: id('lodging-checkin'),
+      time: lodging.checkInAt,
+      title: `Check in at ${lodging.propertyName}`,
+      explanation: lodging.address ?? 'Entered by you',
+      source: 'Entered by you',
+      actionRequired: false,
+      mode: 'walk',
+    });
+  }
+  if (lodging?.checkOutAt) {
+    items.push({
+      id: id('lodging-checkout'),
+      time: lodging.checkOutAt,
+      title: `Check out of ${lodging.propertyName}`,
+      explanation: 'Entered by you',
+      source: 'Entered by you',
+      actionRequired: true,
+      mode: 'walk',
+    });
+  }
+
   // Stable order + de-dup by id (idempotent regardless of caller behavior).
   const seen = new Map<string, Omit<LivingTimelineItem, 'status'>>();
   for (const item of items) if (!seen.has(item.id)) seen.set(item.id, item);
@@ -226,6 +251,89 @@ export async function clearTimelineTracking(tripId: string): Promise<void> {
   } catch {
     // best effort
   }
+}
+
+// ---------------------------------------------------------------------------
+// User overrides: add your own items, hide generated ones (restorable),
+// and mark anything completed by hand. Stored per trip; the derivation
+// stays pure and the overrides are applied on top.
+// ---------------------------------------------------------------------------
+
+const OVERRIDES_KEY = '@a2z/timeline-overrides';
+
+export interface CustomTimelineItem {
+  id: string; // `${tripId}:custom:<n>`
+  time: string; // ISO
+  title: string;
+  explanation?: string;
+}
+
+export interface TimelineOverrides {
+  added: CustomTimelineItem[];
+  /** IDs of generated items the user removed (restorable). */
+  removed: string[];
+  /** IDs the user manually marked completed. */
+  completed: string[];
+}
+
+const EMPTY_OVERRIDES: TimelineOverrides = { added: [], removed: [], completed: [] };
+
+export async function getTimelineOverrides(tripId: string): Promise<TimelineOverrides> {
+  try {
+    const raw = await AsyncStorage.getItem(OVERRIDES_KEY);
+    const all = raw ? (JSON.parse(raw) as Record<string, TimelineOverrides>) : {};
+    const ov = all[tripId];
+    if (!ov || !Array.isArray(ov.added) || !Array.isArray(ov.removed) || !Array.isArray(ov.completed)) {
+      return { ...EMPTY_OVERRIDES };
+    }
+    return ov;
+  } catch {
+    return { ...EMPTY_OVERRIDES };
+  }
+}
+
+export async function saveTimelineOverrides(
+  tripId: string,
+  overrides: TimelineOverrides,
+): Promise<void> {
+  try {
+    const raw = await AsyncStorage.getItem(OVERRIDES_KEY);
+    const all = raw ? (JSON.parse(raw) as Record<string, TimelineOverrides>) : {};
+    all[tripId] = overrides;
+    await AsyncStorage.setItem(OVERRIDES_KEY, JSON.stringify(all));
+  } catch {
+    // best effort — the in-memory state still renders
+  }
+}
+
+/** Apply removals and user-added items to a derived timeline (pure). */
+export function applyOverrides(
+  items: Omit<LivingTimelineItem, 'status'>[],
+  overrides: TimelineOverrides,
+): Omit<LivingTimelineItem, 'status'>[] {
+  const removed = new Set(overrides.removed);
+  const kept = items.filter((i) => !removed.has(i.id));
+  const custom = overrides.added.map((c) => ({
+    id: c.id,
+    time: c.time,
+    title: c.title,
+    explanation: c.explanation ?? 'Added by you',
+    source: 'Added by you',
+    actionRequired: false,
+    mode: 'wait' as const,
+  }));
+  return [...kept, ...custom].sort(
+    (a, b) => new Date(a.time).getTime() - new Date(b.time).getTime(),
+  );
+}
+
+/** Force user-completed items to completed after status assignment (pure). */
+export function applyCompleted(
+  items: LivingTimelineItem[],
+  overrides: TimelineOverrides,
+): LivingTimelineItem[] {
+  const done = new Set(overrides.completed);
+  return items.map((i) => (done.has(i.id) ? { ...i, status: 'completed' as const } : i));
 }
 
 /** The single most urgent thing + the most recent change, for the header. */

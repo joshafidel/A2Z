@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useNavigation, type NavigationProp } from '@react-navigation/native';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -23,14 +24,36 @@ import { DataFreshnessBadge } from '../components/DataFreshnessBadge';
 import { LivingTimelineView } from '../components/LivingTimelineView';
 import { getFlightStatus, notifyFlightUpdate, type FlightStatus } from '../services/flightStatusService';
 import { getTsaWaitNow, type TsaWaitNow } from '../services/tsaService';
-import { recordSnapshot, type TripChange } from '../services/tripMonitorService';
+import { getChangeLog, recordSnapshot, type TripChange } from '../services/tripMonitorService';
 import {
+  applyCompleted,
+  applyOverrides,
   assignStatuses,
   deriveLivingTimeline,
+  getTimelineOverrides,
   headlineFor,
+  saveTimelineOverrides,
   withChangeTracking,
   type LivingTimelineItem,
+  type TimelineOverrides,
 } from '../services/timelineService';
+import { AdviceCard } from '../components/AdviceCard';
+import { DepartureCard } from '../components/DepartureCard';
+import { ManualFlightCard } from '../components/ManualFlightCard';
+import { TransportCompareCard } from '../components/TransportCompareCard';
+import { TripWeatherCard } from '../components/TripWeatherCard';
+import type { RootTabParamList } from '../navigation/types';
+import type { TripAdvice } from '../services/adviceService';
+import { duplicateTrip, removeTripCompletely } from '../services/manualTripService';
+import { DEFAULT_PROFILE, getProfile, type TravelerProfile } from '../services/preferencesService';
+import { upsertTrip } from '../services/storageService';
+import {
+  conditionFromExpected,
+  getStoredWeatherSnapshot,
+} from '../services/weatherService';
+import { parseTimeInput } from './CreateTripScreen';
+import { confirmAction } from '../utils/confirm';
+import type { ExpectedConditions, WeatherCondition } from '../types';
 import {
   createApproval,
   decideApproval,
@@ -60,7 +83,25 @@ import { formatCountdown, formatDate, formatDuration, formatMoney, formatTime } 
 /** Trip dashboard: the "during travel" home for the chosen route. */
 export function DashboardScreen() {
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation<NavigationProp<RootTabParamList>>();
   const { savedTrips, activeTrip, setActiveTrip, deleteTrip, refreshTrips } = useTrip();
+
+  // Traveler profile drives the departure calculator + transport scoring.
+  const [profile, setProfile] = useState<TravelerProfile>(DEFAULT_PROFILE);
+  useEffect(() => {
+    getProfile().then(setProfile);
+  }, []);
+
+  const isManual = Boolean(activeTrip?.manual);
+
+  const goCreateTrip = (editTripId?: string) =>
+    navigation.navigate('PlanTab', { screen: 'CreateTrip', params: editTripId ? { editTripId } : undefined });
+
+  /** After a card saved a new version of the trip: refresh + keep it active. */
+  const onTripUpdated = async () => {
+    await refreshTrips();
+    setChanges(activeTrip ? await getChangeLog(activeTrip.id) : []);
+  };
 
   // Re-render every 30s so the countdown stays fresh.
   const [now, setNow] = useState(new Date());
@@ -180,9 +221,24 @@ export function DashboardScreen() {
 
   // --- What changed (persisted per trip) ------------------------------------
   const [changes, setChanges] = useState<TripChange[]>([]);
+  useEffect(() => {
+    if (!activeTrip) {
+      setChanges([]);
+      return;
+    }
+    getChangeLog(activeTrip.id).then(setChanges);
+  }, [activeTrip?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // --- Living timeline (Step 1) ---------------------------------------------
+  // --- Living timeline (Step 1) + user overrides -----------------------------
   const [living, setLiving] = useState<LivingTimelineItem[]>([]);
+  const [overrides, setOverrides] = useState<TimelineOverrides>({ added: [], removed: [], completed: [] });
+  const [newTimelineTitle, setNewTimelineTitle] = useState('');
+  const [newTimelineTime, setNewTimelineTime] = useState('');
+  const [timelineError, setTimelineError] = useState<string>();
+  useEffect(() => {
+    if (!activeTrip) return;
+    getTimelineOverrides(activeTrip.id).then(setOverrides);
+  }, [activeTrip?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!activeTrip) {
       setLiving([]);
@@ -191,16 +247,150 @@ export function DashboardScreen() {
     let cancelled = false;
     (async () => {
       const base = deriveLivingTimeline(activeTrip, {
-        flightEstimatedIso: flightStatus?.estimatedIso,
+        flightEstimatedIso: flightStatus?.estimatedIso ?? activeTrip.manual?.flight?.estimatedDepartureAt,
       });
-      const tracked = await withChangeTracking(activeTrip.id, base);
-      if (!cancelled) setLiving(assignStatuses(tracked, now));
+      const withUser = applyOverrides(base, overrides);
+      const tracked = await withChangeTracking(activeTrip.id, withUser);
+      if (!cancelled) setLiving(applyCompleted(assignStatuses(tracked, now), overrides));
     })();
     return () => {
       cancelled = true;
     };
-  }, [activeTrip, flightStatus, now]);
+  }, [activeTrip, flightStatus, now, overrides]);
   const headline = headlineFor(living);
+
+  const updateOverrides = async (next: TimelineOverrides) => {
+    if (!activeTrip) return;
+    setOverrides(next);
+    await saveTimelineOverrides(activeTrip.id, next);
+  };
+  const toggleItemComplete = (id: string, currentlyCompleted: boolean) =>
+    updateOverrides({
+      ...overrides,
+      completed: currentlyCompleted
+        ? overrides.completed.filter((c) => c !== id)
+        : [...overrides.completed, id],
+    });
+  const removeTimelineItem = (id: string) =>
+    updateOverrides(
+      id.includes(':custom:')
+        ? { ...overrides, added: overrides.added.filter((a) => a.id !== id) }
+        : { ...overrides, removed: [...overrides.removed, id] },
+    );
+  const restoreRemovedItems = () => updateOverrides({ ...overrides, removed: [] });
+  const addTimelineItem = () => {
+    if (!activeTrip) return;
+    const mins = parseTimeInput(newTimelineTime);
+    if (!newTimelineTitle.trim() || mins === undefined) {
+      setTimelineError('Give the item a name and a time like "3:30 PM".');
+      return;
+    }
+    setTimelineError(undefined);
+    const d = new Date(activeTrip.route.departureTime);
+    d.setHours(Math.floor(mins / 60), mins % 60, 0, 0);
+    updateOverrides({
+      ...overrides,
+      added: [
+        ...overrides.added,
+        {
+          id: `${activeTrip.id}:custom:${Date.now()}`,
+          time: d.toISOString(),
+          title: newTimelineTitle.trim(),
+        },
+      ],
+    });
+    setNewTimelineTitle('');
+    setNewTimelineTime('');
+  };
+
+  // --- Weather for advice + packing (stored snapshot or the user's pick) -----
+  const [adviceWeather, setAdviceWeather] = useState<WeatherCondition>();
+  useEffect(() => {
+    if (!activeTrip) {
+      setAdviceWeather(undefined);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const snap = await getStoredWeatherSnapshot(activeTrip.id);
+      if (cancelled) return;
+      if (snap) setAdviceWeather(snap.condition);
+      else if (activeTrip.manual?.expectedConditions) {
+        setAdviceWeather(
+          conditionFromExpected(
+            activeTrip.manual.expectedConditions,
+            activeTrip.search.destination.label ?? activeTrip.search.destination.address,
+          ),
+        );
+      } else setAdviceWeather(undefined);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTrip]);
+
+  const onPickExpected = async (kind: ExpectedConditions) => {
+    if (!activeTrip?.manual) return;
+    await upsertTrip({ ...activeTrip, manual: { ...activeTrip.manual, expectedConditions: kind } });
+    await refreshTrips();
+  };
+
+  // --- Transportation comparison + advice acceptance -------------------------
+  const [transportCount, setTransportCount] = useState(0);
+
+  const onAcceptAdvice = async (a: TripAdvice) => {
+    if (!activeTrip) return;
+    if (a.effect.type === 'packing' && packing) {
+      updatePacking({
+        ...packing,
+        items: [
+          ...packing.items,
+          {
+            id: `user-${Date.now()}`,
+            category: 'Recommended',
+            name: a.effect.name,
+            quantity: 1,
+            reason: a.effect.reason,
+            essential: false,
+            packed: false,
+            source: 'user',
+          },
+        ],
+      });
+    } else if (a.effect.type === 'timeline') {
+      await updateOverrides({
+        ...overrides,
+        added: [
+          ...overrides.added,
+          {
+            id: `${activeTrip.id}:custom:${Date.now()}`,
+            time: a.effect.timeIso,
+            title: a.effect.title,
+            explanation: a.effect.explanation,
+          },
+        ],
+      });
+    }
+  };
+
+  // --- Trip management: edit / duplicate / delete ----------------------------
+  const onDuplicateTrip = async () => {
+    if (!activeTrip) return;
+    const copy = await duplicateTrip(activeTrip);
+    await refreshTrips();
+    if (copy) setActiveTrip(copy);
+  };
+  const onDeleteActiveTrip = () => {
+    if (!activeTrip) return;
+    confirmAction(
+      'Delete this trip?',
+      `"${activeTrip.manual?.name ?? activeTrip.route.title}" and its timeline edits will be removed from this browser. This cannot be undone.`,
+      async () => {
+        await removeTripCompletely(activeTrip.id);
+        await refreshTrips();
+      },
+    );
+  };
 
   // --- Approvals (Step 3) ----------------------------------------------------
   const [approvals, setApprovals] = useState<Approval[]>([]);
@@ -280,13 +470,18 @@ export function DashboardScreen() {
       activeTrip.search.destination.label ?? activeTrip.search.destination.address,
       activeTrip.search.departureTime,
     );
+    const m = activeTrip.manual;
+    const nights = m?.endsAt
+      ? Math.max(1, Math.round((new Date(m.endsAt).getTime() - new Date(m.startsAt).getTime()) / 86_400_000))
+      : 2;
     const fresh = await generatePackingList({
       tripId: activeTrip.id,
       destination: activeTrip.search.destination.label ?? activeTrip.search.destination.address,
-      nights: 2,
+      nights,
       travelers: activeTrip.search.travelers,
+      purpose: m?.purpose === 'business' ? 'work' : m?.purpose,
       checksBag: activeTrip.search.bags > 0,
-      weather: wx.ok ? wx.data : undefined,
+      weather: wx.ok ? wx.data : (adviceWeather ?? undefined),
     });
     const next = regenerate && packing ? mergeRegenerated(packing, fresh) : fresh;
     setPacking(next);
@@ -305,9 +500,10 @@ export function DashboardScreen() {
         <EmptyState
           icon="briefcase-outline"
           title="No trips yet"
-          message="Plan a trip and save your favorite route — it will live here with a countdown, timeline, and backup plans."
+          message="Create a trip by hand or plan one from the Plan tab — it will live here with a timeline, packing list, and leave-time advice. Trips are saved only in this browser."
         />
         <View style={styles.demoWrap}>
+          <AppButton label="Create a trip" icon="add-circle" onPress={() => goCreateTrip()} />
           <AppButton
             label={seedingDemo ? 'Setting up the demo…' : 'Try a demo trip'}
             icon="flask"
@@ -316,8 +512,8 @@ export function DashboardScreen() {
             onPress={onSeedDemo}
           />
           <Text style={styles.demoHint}>
-            Seeds a New York → Boston example — every card will be labeled "Demo data" and you can
-            delete it any time.
+            The demo seeds a New York → Boston example — every card will be labeled "Demo data" and
+            you can delete it any time.
           </Text>
         </View>
       </View>
@@ -341,10 +537,11 @@ export function DashboardScreen() {
   };
 
   const onDelete = (trip: SavedTrip) => {
-    Alert.alert('Remove trip?', `${trip.search.origin.label ?? 'Origin'} → ${trip.search.destination.label}`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Remove', style: 'destructive', onPress: () => deleteTrip(trip.id) },
-    ]);
+    confirmAction(
+      'Remove trip?',
+      `${trip.search.origin.label ?? 'Origin'} → ${trip.search.destination.label} will be removed from this browser.`,
+      () => deleteTrip(trip.id),
+    );
   };
 
   return (
@@ -409,7 +606,16 @@ export function DashboardScreen() {
           <Text style={styles.demoCardText}>
             This whole trip is demo data so you can explore. Nothing here is a real reservation.
           </Text>
-          <AppButton label="Delete demo trip" icon="trash" variant="ghost" small onPress={onDeleteDemo} />
+          <View style={styles.demoActions}>
+            <AppButton
+              label="Copy this demo into my trips"
+              icon="copy-outline"
+              variant="secondary"
+              small
+              onPress={onDuplicateTrip}
+            />
+            <AppButton label="Delete demo trip" icon="trash" variant="ghost" small onPress={onDeleteDemo} />
+          </View>
         </Card>
       )}
 
@@ -463,6 +669,43 @@ export function DashboardScreen() {
           </View>
         )}
       </View>
+
+      {/* Trip management */}
+      <View style={styles.tripActions}>
+        {isManual && (
+          <AppButton label="Edit trip" icon="create-outline" variant="secondary" small onPress={() => goCreateTrip(activeTrip.id)} />
+        )}
+        <AppButton label="Duplicate" icon="copy-outline" variant="secondary" small onPress={onDuplicateTrip} />
+        <AppButton label="Delete" icon="trash-outline" variant="ghost" small onPress={onDeleteActiveTrip} />
+      </View>
+
+      {/* Manual flight status — entered by the user, never claimed live */}
+      {isManual && (
+        <ManualFlightCard trip={activeTrip} profile={profile} onTripUpdated={onTripUpdated} />
+      )}
+
+      {/* Departure calculator with editable assumptions (manual trips) */}
+      {isManual && (
+        <DepartureCard trip={activeTrip} profile={profile} onTripUpdated={onTripUpdated} />
+      )}
+
+      {/* Destination weather: live when Open-Meteo answers, honest fallback otherwise */}
+      <TripWeatherCard trip={activeTrip} onPickExpected={isManual ? onPickExpected : undefined} />
+
+      {/* Rule-based recommendations */}
+      <AdviceCard
+        trip={activeTrip}
+        weather={adviceWeather}
+        transportOptionCount={transportCount}
+        onAccept={onAcceptAdvice}
+      />
+
+      {/* Manual transportation comparison */}
+      <TransportCompareCard
+        tripId={activeTrip.id}
+        priority={profile.transportationPriority}
+        onCountChange={setTransportCount}
+      />
 
       {/* Real-time flight status — delays, cancellations, gate changes */}
       {flightStatus && (
@@ -634,7 +877,7 @@ export function DashboardScreen() {
 
       {highWarnings.length > 0 && <WarningList warnings={highWarnings} />}
 
-      <MapPreview route={route} />
+      {!isManual && <MapPreview route={route} />}
 
       <Card>
         <SectionHeader
@@ -642,7 +885,39 @@ export function DashboardScreen() {
           subtitle={`Everything from packing to ${activeTrip.hotel ? 'hotel check-in' : 'arrival'} — updates as things change`}
         />
         {isDemo && <DataFreshnessBadge mode="demo" provider="Seeded example trip" />}
-        <LivingTimelineView items={living} />
+        <LivingTimelineView
+          items={living}
+          onToggleComplete={toggleItemComplete}
+          onRemove={removeTimelineItem}
+        />
+        {overrides.removed.length > 0 && (
+          <Pressable onPress={restoreRemovedItems} style={styles.restoreRow} accessibilityRole="button">
+            <Ionicons name="refresh" size={13} color={colors.primary} />
+            <Text style={styles.restoreText}>
+              Restore {overrides.removed.length} hidden item{overrides.removed.length === 1 ? '' : 's'}
+            </Text>
+          </Pressable>
+        )}
+        <View style={styles.timelineAddRow}>
+          <TextInput
+            style={[styles.packingInput, styles.flex]}
+            placeholder="Add your own item…"
+            placeholderTextColor={colors.textMuted}
+            value={newTimelineTitle}
+            onChangeText={setNewTimelineTitle}
+            accessibilityLabel="New timeline item name"
+          />
+          <TextInput
+            style={[styles.packingInput, styles.timelineTimeInput]}
+            placeholder="3:30 PM"
+            placeholderTextColor={colors.textMuted}
+            value={newTimelineTime}
+            onChangeText={setNewTimelineTime}
+            accessibilityLabel="New timeline item time"
+          />
+          <AppButton label="Add" small variant="secondary" onPress={addTimelineItem} />
+        </View>
+        {timelineError ? <Text style={styles.timelineErrorText}>{timelineError}</Text> : null}
       </Card>
 
       {/* Approvals: money actions wait for you — approving opens the provider */}
@@ -733,6 +1008,42 @@ export function DashboardScreen() {
         </Card>
       )}
 
+      {/* Manual lodging details */}
+      {activeTrip.manual?.lodging && (
+        <Card>
+          <SectionHeader title="Your stay" subtitle="Entered by you" />
+          <Text style={styles.hotelName}>{activeTrip.manual.lodging.propertyName}</Text>
+          {activeTrip.manual.lodging.address ? (
+            <Text style={styles.hotelMeta}>{activeTrip.manual.lodging.address}</Text>
+          ) : null}
+          <Text style={styles.hotelMeta}>
+            {activeTrip.manual.lodging.checkInAt
+              ? `Check-in ${formatDate(activeTrip.manual.lodging.checkInAt)} ${formatTime(activeTrip.manual.lodging.checkInAt)}`
+              : ''}
+            {activeTrip.manual.lodging.checkOutAt
+              ? ` · Check-out ${formatDate(activeTrip.manual.lodging.checkOutAt)}`
+              : ''}
+          </Text>
+          {activeTrip.manual.lodging.bookingUrl && (
+            <AppButton
+              label="Open booking page"
+              icon="open-outline"
+              variant="secondary"
+              small
+              onPress={() => Linking.openURL(activeTrip.manual!.lodging!.bookingUrl!)}
+            />
+          )}
+        </Card>
+      )}
+
+      {/* Manual notes */}
+      {activeTrip.manual?.notes && (
+        <Card>
+          <SectionHeader title="Your notes" subtitle="Saved as-is — nothing is extracted or verified" />
+          <Text style={styles.notesText}>{activeTrip.manual.notes}</Text>
+        </Card>
+      )}
+
       {/* Trip reminders */}
       <Card>
         <View style={styles.reminderHeader}>
@@ -773,27 +1084,45 @@ export function DashboardScreen() {
           ))}
       </Card>
 
-      <Card>
-        <SectionHeader title="Tickets & apps" />
-        <BookingLinks links={route.bookingLinks} />
-      </Card>
+      {route.bookingLinks.length > 0 && (
+        <Card>
+          <SectionHeader title="Tickets & apps" />
+          <BookingLinks links={route.bookingLinks} />
+        </Card>
+      )}
 
-      <Card>
-        <SectionHeader title="Backup options" subtitle="Ready if something slips" />
-        <View style={styles.backupStack}>
-          {route.backupPlans.map((b) => (
-            <View key={b.id} style={styles.backupRow}>
-              <ModeIcon mode={b.mode} size={14} />
-              <View style={styles.flex}>
-                <Text style={styles.backupTitle}>{b.title}</Text>
-                <Text style={styles.backupDesc}>{b.description}</Text>
+      {route.backupPlans.length > 0 && (
+        <Card>
+          <SectionHeader title="Backup options" subtitle="Ready if something slips" />
+          <View style={styles.backupStack}>
+            {route.backupPlans.map((b) => (
+              <View key={b.id} style={styles.backupRow}>
+                <ModeIcon mode={b.mode} size={14} />
+                <View style={styles.flex}>
+                  <Text style={styles.backupTitle}>{b.title}</Text>
+                  <Text style={styles.backupDesc}>{b.description}</Text>
+                </View>
               </View>
-            </View>
-          ))}
-        </View>
-      </Card>
+            ))}
+          </View>
+        </Card>
+      )}
 
-      <AppButton label="Emergency reroute" icon="alert-circle" variant="danger" onPress={onReroute} />
+      {!isManual && (
+        <AppButton label="Emergency reroute" icon="alert-circle" variant="danger" onPress={onReroute} />
+      )}
+
+      <Text style={styles.storageNotice}>
+        Trips are saved only in this browser on this device. Back them up any time with Settings →
+        Export data.
+      </Text>
+
+      <AppButton
+        label="Create another trip"
+        icon="add-circle-outline"
+        variant="secondary"
+        onPress={() => goCreateTrip()}
+      />
 
       {/* Other saved trips */}
       {savedTrips.length > 1 && (
@@ -864,6 +1193,15 @@ const styles = StyleSheet.create({
   notifTime: { fontSize: 10.5, color: colors.textMuted, marginTop: 2 },
   notifDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.primary, marginTop: 5 },
   demoWrap: { padding: spacing.xl, gap: spacing.sm },
+  demoActions: { flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' },
+  tripActions: { flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' },
+  restoreRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: spacing.sm, minHeight: 32 },
+  restoreText: { fontSize: 12.5, fontWeight: '700', color: colors.primary },
+  timelineAddRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.md },
+  timelineTimeInput: { width: 86 },
+  timelineErrorText: { fontSize: 12, color: colors.danger, fontWeight: '600', marginTop: 4 },
+  notesText: { fontSize: 13, color: colors.text, lineHeight: 19 },
+  storageNotice: { fontSize: 11.5, color: colors.textMuted, textAlign: 'center', lineHeight: 16 },
   demoHint: { fontSize: 12, color: colors.textMuted, textAlign: 'center', lineHeight: 17 },
   demoCard: { gap: spacing.sm, borderColor: colors.warning, borderWidth: 1 },
   demoCardText: { fontSize: 12.5, color: colors.textSecondary, lineHeight: 17 },

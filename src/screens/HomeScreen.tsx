@@ -107,6 +107,14 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
         <Ionicons name="document-text-outline" size={15} color={colors.primary} />
         <Text style={styles.importLinkText}>Paste a confirmation email instead</Text>
       </Pressable>
+      <Pressable
+        onPress={() => navigation.navigate('CreateTrip', undefined)}
+        style={[styles.importLink, styles.createLink]}
+        accessibilityRole="button"
+      >
+        <Ionicons name="add-circle-outline" size={15} color={colors.primary} />
+        <Text style={styles.importLinkText}>Create a trip by hand — enter your own details</Text>
+      </Pressable>
 
       {activeTrip && (
         <View style={styles.body}>
@@ -194,6 +202,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md,
   },
   importLinkText: { fontSize: 13, fontWeight: '700', color: colors.primary },
+  createLink: { marginTop: -spacing.md },
   body: { padding: spacing.lg, gap: spacing.lg, marginTop: spacing.sm },
   tripCard: { gap: spacing.sm },
   tripHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },

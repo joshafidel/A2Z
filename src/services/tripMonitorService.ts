@@ -77,6 +77,36 @@ export function diffSnapshots(prev: TripSnapshot, next: TripSnapshot): string[] 
 }
 
 /**
+ * Append a user-driven change ("Departure changed from 6:05 PM to 6:42 PM…")
+ * to a trip's What-changed log. Used when the user edits trip inputs; the
+ * snapshot diff path below handles live-data changes.
+ */
+export async function recordManualChange(tripId: string, message: string): Promise<TripChange[]> {
+  try {
+    const raw = await AsyncStorage.getItem(KEY);
+    const all = raw ? (JSON.parse(raw) as Record<string, StoredMonitor>) : {};
+    const prev = all[tripId] ?? { snapshot: {}, changes: [] };
+    const changes = [{ at: new Date().toISOString(), message }, ...prev.changes].slice(0, MAX_LOG);
+    all[tripId] = { ...prev, changes };
+    await AsyncStorage.setItem(KEY, JSON.stringify(all));
+    return changes;
+  } catch {
+    return [];
+  }
+}
+
+/** Read a trip's What-changed log without recording anything. */
+export async function getChangeLog(tripId: string): Promise<TripChange[]> {
+  try {
+    const raw = await AsyncStorage.getItem(KEY);
+    const all = raw ? (JSON.parse(raw) as Record<string, StoredMonitor>) : {};
+    return all[tripId]?.changes ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Record the latest snapshot for a trip and return the running change log
  * (newest first). Idempotent for unchanged data: no new entries, no spam.
  */
