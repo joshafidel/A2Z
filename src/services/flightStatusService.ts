@@ -9,7 +9,7 @@
  * undefined and the UI simply shows no status card — no fake statuses.
  */
 
-import { apiConfig, fetchWithTimeout, isLive } from './config';
+import { apiConfig, fetchWithTimeout, isLive, liveDataEnabled } from './config';
 
 export interface FlightStatus {
   flight: string; // "DL 1232"
@@ -22,36 +22,52 @@ export interface FlightStatus {
   /** True when the traveler should act on this (delay ≥ 15 min, cancel…). */
   important: boolean;
   headline: string; // "DL 1232 delayed 45 min — new departure 4:45 PM"
+  /** When this status was actually retrieved from the provider. */
+  verifiedAt: string;
 }
 
 const statusCache = new Map<string, { at: number; value: FlightStatus | undefined }>();
 const TTL_MS = 5 * 60_000; // aviationstack free tier is rate-limited — cache 5 min
 
+interface ProviderRow {
+  flight_status?: string | null;
+  departure?: {
+    gate?: string | null;
+    terminal?: string | null;
+    delay?: number | null;
+    scheduled?: string | null;
+    estimated?: string | null;
+  };
+}
+
+async function fetchRow(url: string): Promise<ProviderRow | undefined> {
+  try {
+    const res = await fetchWithTimeout(url, 8000, { headers: { Accept: 'application/json' } });
+    if (!res.ok) return undefined;
+    const body = (await res.json()) as { data?: ProviderRow[] };
+    return body.data?.[0];
+  } catch {
+    return undefined;
+  }
+}
+
 export async function getFlightStatus(flightNumber: string): Promise<FlightStatus | undefined> {
-  if (!isLive('aviationstackApiKey')) return undefined;
+  if (!liveDataEnabled()) return undefined;
   const iata = flightNumber.replace(/\s+/g, '').toUpperCase(); // "DL 1232" → "DL1232"
   const cached = statusCache.get(iata);
   if (cached && Date.now() - cached.at < TTL_MS) return cached.value;
 
   try {
-    const res = await fetchWithTimeout(
-      `https://api.aviationstack.com/v1/flights?access_key=${apiConfig.aviationstackApiKey}&flight_iata=${iata}`,
-      6000,
-    );
-    if (!res.ok) return undefined;
-    const body = (await res.json()) as {
-      data?: Array<{
-        flight_status?: string;
-        departure?: {
-          gate?: string;
-          terminal?: string;
-          delay?: number;
-          scheduled?: string;
-          estimated?: string;
-        };
-      }>;
-    };
-    const row = body.data?.[0];
+    // 1) Server proxy first: the key stays server-side (AVIATIONSTACK_API_KEY
+    //    on Vercel, no EXPO_PUBLIC_ prefix) and the free tier's HTTP-only
+    //    limitation doesn't apply server-to-server.
+    let row = await fetchRow(`/api/flight-status?flight=${iata}`);
+    // 2) Direct provider call only when a client-side key was configured.
+    if (!row && isLive('aviationstackApiKey')) {
+      row = await fetchRow(
+        `https://api.aviationstack.com/v1/flights?access_key=${apiConfig.aviationstackApiKey}&flight_iata=${iata}`,
+      );
+    }
     if (!row) return undefined;
 
     const delay = row.departure?.delay ?? 0;
@@ -82,12 +98,13 @@ export async function getFlightStatus(flightNumber: string): Promise<FlightStatu
       flight: flightNumber,
       status,
       delayMinutes: delay > 0 ? delay : undefined,
-      departureGate: row.departure?.gate,
-      departureTerminal: row.departure?.terminal,
-      scheduledIso: row.departure?.scheduled,
-      estimatedIso: est,
+      departureGate: row.departure?.gate ?? undefined,
+      departureTerminal: row.departure?.terminal ?? undefined,
+      scheduledIso: row.departure?.scheduled ?? undefined,
+      estimatedIso: est ?? undefined,
       important,
       headline,
+      verifiedAt: new Date().toISOString(),
     };
     statusCache.set(iata, { at: Date.now(), value });
     return value;

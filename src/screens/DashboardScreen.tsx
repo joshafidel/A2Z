@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppButton } from '../components/AppButton';
@@ -20,8 +20,18 @@ import {
   scheduleTripReminders,
   type TripReminder,
 } from '../services/notificationService';
+import { DataFreshnessBadge } from '../components/DataFreshnessBadge';
 import { getFlightStatus, notifyFlightUpdate, type FlightStatus } from '../services/flightStatusService';
 import { getTsaWaitNow, type TsaWaitNow } from '../services/tsaService';
+import { recordSnapshot, type TripChange } from '../services/tripMonitorService';
+import {
+  generatePackingList,
+  getStoredPackingList,
+  mergeRegenerated,
+  storePackingList,
+  type PackingList,
+} from '../services/packingService';
+import { getWeather } from '../services/weatherService';
 import { colors, radii, spacing, typography } from '../theme';
 import type { SavedTrip, TimelineStep } from '../types';
 import { formatCountdown, formatDate, formatDuration, formatMoney, formatTime } from '../utils/time';
@@ -103,6 +113,17 @@ export function DashboardScreen() {
         }
       }
       if (tsa) setTsaNow(tsa);
+      // Meaningful-change detection: compare with the stored snapshot and
+      // keep the "What changed" log (thresholds filter out tiny wobbles).
+      if (activeTrip && (status || tsa)) {
+        const log = await recordSnapshot(activeTrip.id, {
+          flightStatus: status?.status,
+          flightEstimatedIso: status?.estimatedIso ?? status?.scheduledIso,
+          gate: status?.departureGate,
+          tsaWaitMinutes: tsa?.waitMinutes,
+        });
+        if (!cancelled) setChanges(log);
+      }
     };
     poll();
     const t = setInterval(poll, 5 * 60_000);
@@ -110,7 +131,46 @@ export function DashboardScreen() {
       cancelled = true;
       clearInterval(t);
     };
-  }, [flightNo, airportCode]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flightNo, airportCode, activeTrip?.id]);
+
+  // --- What changed (persisted per trip) ------------------------------------
+  const [changes, setChanges] = useState<TripChange[]>([]);
+
+  // --- Packing list (AI-generated, validated; rules fallback; persisted) ----
+  const [packing, setPacking] = useState<PackingList>();
+  const [packingBusy, setPackingBusy] = useState(false);
+  const [newItem, setNewItem] = useState('');
+  useEffect(() => {
+    if (!activeTrip) return;
+    getStoredPackingList(activeTrip.id).then((l) => setPacking(l));
+  }, [activeTrip?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const buildPacking = async (regenerate: boolean) => {
+    if (!activeTrip || packingBusy) return;
+    setPackingBusy(true);
+    const wx = await getWeather(
+      activeTrip.search.destination.label ?? activeTrip.search.destination.address,
+      activeTrip.search.departureTime,
+    );
+    const fresh = await generatePackingList({
+      tripId: activeTrip.id,
+      destination: activeTrip.search.destination.label ?? activeTrip.search.destination.address,
+      nights: 2,
+      travelers: activeTrip.search.travelers,
+      checksBag: activeTrip.search.bags > 0,
+      weather: wx.ok ? wx.data : undefined,
+    });
+    const next = regenerate && packing ? mergeRegenerated(packing, fresh) : fresh;
+    setPacking(next);
+    await storePackingList(next);
+    setPackingBusy(false);
+  };
+
+  const updatePacking = (next: PackingList) => {
+    setPacking(next);
+    storePackingList(next);
+  };
 
   if (!activeTrip) {
     return (
@@ -196,10 +256,11 @@ export function DashboardScreen() {
           <View style={styles.flex}>
             <Text style={styles.statusHeadline}>{flightStatus.headline}</Text>
             <Text style={styles.statusMeta}>
-              Live flight status
-              {flightStatus.departureTerminal ? ` · Terminal ${flightStatus.departureTerminal}` : ''}
-              {flightStatus.departureGate ? ` · Gate ${flightStatus.departureGate}` : ''}
+              {flightStatus.departureTerminal ? `Terminal ${flightStatus.departureTerminal} · ` : ''}
+              {flightStatus.departureGate ? `Gate ${flightStatus.departureGate} · ` : ''}
+              re-checked every 5 min
             </Text>
+            <DataFreshnessBadge mode="live" provider="aviationstack" lastVerifiedAt={flightStatus.verifiedAt} />
           </View>
         </Card>
       )}
@@ -215,9 +276,137 @@ export function DashboardScreen() {
                 Line is longer than the plan budgeted — leave ~{tsaNow.waitMinutes - 25} min earlier.
               </Text>
             )}
+            <DataFreshnessBadge mode="live" provider="TSA Wait Times" lastVerifiedAt={new Date().toISOString()} />
           </View>
         </Card>
       )}
+
+      {/* What changed — meaningful comparisons only, persisted per trip */}
+      {changes.length > 0 && (
+        <Card>
+          <SectionHeader title="What changed" subtitle="Only moves big enough to matter" />
+          <View style={styles.changeList}>
+            {changes.map((c, i) => (
+              <View key={`${c.at}-${i}`} style={styles.changeRow}>
+                <Ionicons name="swap-horizontal" size={14} color={colors.warning} />
+                <View style={styles.flex}>
+                  <Text style={styles.changeText}>{c.message}</Text>
+                  <Text style={styles.changeTime}>{formatTime(c.at)}</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        </Card>
+      )}
+
+      {/* Packing list — AI-generated (validated) or rules-based, editable */}
+      <Card>
+        <SectionHeader
+          title="Packing list"
+          subtitle={
+            packing
+              ? packing.generatedBy === 'ai'
+                ? 'Generated by Claude from your trip + forecast'
+                : 'Rules-based suggestions (no AI key configured)'
+              : 'Built from your destination, dates, and the forecast'
+          }
+        />
+        {!packing ? (
+          <AppButton
+            label={packingBusy ? 'Building your list…' : 'Generate packing list'}
+            icon="briefcase"
+            small
+            disabled={packingBusy}
+            onPress={() => buildPacking(false)}
+          />
+        ) : (
+          <View style={styles.packingWrap}>
+            <Text style={styles.packingSummary}>{packing.summary}</Text>
+            {[...packing.weatherWarnings, ...packing.baggageWarnings].map((w) => (
+              <Text key={w} style={styles.packingWarning}>
+                ⚠ {w}
+              </Text>
+            ))}
+            {packing.items.map((item) => (
+              <Pressable
+                key={item.id}
+                onPress={() =>
+                  updatePacking({
+                    ...packing,
+                    items: packing.items.map((i) =>
+                      i.id === item.id ? { ...i, packed: !i.packed } : i,
+                    ),
+                  })
+                }
+                style={styles.packingRow}
+              >
+                <Ionicons
+                  name={item.packed ? 'checkbox' : 'square-outline'}
+                  size={18}
+                  color={item.packed ? colors.success : colors.textMuted}
+                />
+                <View style={styles.flex}>
+                  <Text style={[styles.packingName, item.packed && styles.packingDone]}>
+                    {item.quantity > 1 ? `${item.quantity}× ` : ''}
+                    {item.name}
+                    {item.essential ? ' *' : ''}
+                  </Text>
+                  <Text style={styles.packingReason}>{item.reason}</Text>
+                </View>
+                <Pressable
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    updatePacking({
+                      ...packing,
+                      items: packing.items.filter((i) => i.id !== item.id),
+                    });
+                  }}
+                  accessibilityLabel={`Remove ${item.name}`}
+                  style={styles.packingDelete}
+                >
+                  <Ionicons name="close" size={14} color={colors.textMuted} />
+                </Pressable>
+              </Pressable>
+            ))}
+            <View style={styles.packingAddRow}>
+              <TextInput
+                style={styles.packingInput}
+                placeholder="Add your own item…"
+                placeholderTextColor={colors.textMuted}
+                value={newItem}
+                onChangeText={setNewItem}
+                onSubmitEditing={() => {
+                  if (!newItem.trim()) return;
+                  updatePacking({
+                    ...packing,
+                    items: [
+                      ...packing.items,
+                      {
+                        id: `user-${Date.now()}`,
+                        category: 'Your items',
+                        name: newItem.trim(),
+                        quantity: 1,
+                        reason: 'Added by you',
+                        essential: false,
+                        packed: false,
+                        source: 'user',
+                      },
+                    ],
+                  });
+                  setNewItem('');
+                }}
+              />
+              <AppButton
+                label={packingBusy ? '…' : 'Regenerate'}
+                variant="ghost"
+                small
+                disabled={packingBusy}
+                onPress={() => buildPacking(true)}
+              />
+            </View>
+          </View>
+        )}
+      </Card>
 
       {highWarnings.length > 0 && <WarningList warnings={highWarnings} />}
 
@@ -357,7 +546,30 @@ const styles = StyleSheet.create({
   statusCardAlert: { borderColor: colors.danger, borderWidth: 1.5 },
   statusCardOk: { borderColor: colors.success, borderWidth: 1 },
   statusHeadline: { fontSize: 14, fontWeight: '800', color: colors.ink },
-  statusMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+  statusMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 2, marginBottom: 4 },
+  changeList: { gap: spacing.md },
+  changeRow: { flexDirection: 'row', gap: spacing.sm, alignItems: 'flex-start' },
+  changeText: { fontSize: 13, color: colors.text, lineHeight: 18 },
+  changeTime: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
+  packingWrap: { gap: spacing.sm },
+  packingSummary: { fontSize: 13, color: colors.textSecondary, lineHeight: 18 },
+  packingWarning: { fontSize: 12, color: colors.warning, fontWeight: '600', lineHeight: 16 },
+  packingRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, minHeight: 36 },
+  packingName: { fontSize: 14, fontWeight: '600', color: colors.text },
+  packingDone: { textDecorationLine: 'line-through', color: colors.textMuted },
+  packingReason: { fontSize: 11.5, color: colors.textMuted },
+  packingDelete: { padding: 6 },
+  packingAddRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  packingInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: colors.text,
+  },
   heroCard: {
     backgroundColor: colors.navy,
     borderRadius: radii.xl,
