@@ -10,10 +10,12 @@
  */
 
 const CACHE = 'a2z-v1';
-// The build step injects the hashed JS bundle paths here so the whole app
+// The build step injects the site's base path (e.g. "/A2Z" on GitHub
+// Pages, "" on Vercel) and the hashed JS bundle paths, so the whole app
 // shell is cached at install time — offline works after a single visit.
+const BASE = '';
 const BUNDLES = [];
-const SHELL = ['/', '/manifest.json', '/icon-192.png', '/icon-512.png'].concat(BUNDLES);
+const SHELL = [`${BASE}/`, `${BASE}/manifest.json`, `${BASE}/icon-192.png`, `${BASE}/icon-512.png`].concat(BUNDLES);
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -47,10 +49,10 @@ self.addEventListener('fetch', (event) => {
       fetch(request)
         .then((res) => {
           const copy = res.clone();
-          caches.open(CACHE).then((cache) => cache.put('/', copy));
+          caches.open(CACHE).then((cache) => cache.put(`${BASE}/`, copy));
           return res;
         })
-        .catch(() => caches.match('/').then((hit) => hit ?? Response.error())),
+        .catch(() => caches.match(`${BASE}/`).then((hit) => hit ?? Response.error())),
     );
     return;
   }

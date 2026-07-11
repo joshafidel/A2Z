@@ -10,7 +10,7 @@ name: Deploy web to GitHub Pages
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'claude/a2z-travel-planning-mvp-4f1920']
   workflow_dispatch:
 
 permissions:
@@ -27,6 +27,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Creates the GitHub Pages site automatically on first run — no
+      # manual "Settings → Pages" step needed.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/setup-node@v4
         with:
           node-version: 22
