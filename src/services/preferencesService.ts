@@ -10,13 +10,35 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export type TransportationPriority = 'fastest' | 'cheapest' | 'balanced' | 'comfort';
 
 /** How often the traveler checks a bag — shapes defaults and reminders. */
-export type BagHabit = 'never' | 'sometimes' | 'usually' | 'always';
+export type BagHabit = 'never' | 'if-needed' | 'sometimes' | 'usually' | 'always';
 
 export const BAG_HABIT_LABELS: Record<BagHabit, string> = {
   never: 'Never — carry-on only',
+  'if-needed': 'If I need to — only when the trip demands it',
   sometimes: 'Sometimes — depends on the trip',
   usually: 'Usually — most trips',
   always: 'Always — I check a bag',
+};
+
+/** Travel modes the traveler is willing to take at all. */
+export type AcceptedMode = 'flights' | 'trains' | 'buses' | 'cars';
+
+export const ACCEPTED_MODE_LABELS: Record<AcceptedMode, string> = {
+  flights: 'Flights',
+  trains: 'Trains',
+  buses: 'Buses',
+  cars: 'Driving / rental car',
+};
+
+/** How the traveler prefers to get to the airport. */
+export type AirportAccessMode = 'transit' | 'rideshare' | 'taxi' | 'drive-park' | 'dropoff';
+
+export const AIRPORT_ACCESS_LABELS: Record<AirportAccessMode, string> = {
+  transit: 'Public transit',
+  rideshare: 'Rideshare (Uber/Lyft)',
+  taxi: 'Taxi',
+  'drive-park': 'Drive & park',
+  dropoff: 'Someone drops me off',
 };
 
 export interface TravelerProfile {
@@ -31,6 +53,10 @@ export interface TravelerProfile {
   airportRanking?: string[];
   /** Bag-check habit; usuallyChecksBag stays in sync for older code. */
   bagHabit?: BagHabit;
+  /** Modes the traveler will consider — the planner preselects these. */
+  acceptedModes?: AcceptedMode[];
+  /** Preferred way of getting to the airport. */
+  airportAccessMode?: AirportAccessMode;
   temperatureUnit: 'fahrenheit' | 'celsius';
   currency: string; // ISO code, display only
   hasTsaPrecheck: boolean;
@@ -86,8 +112,25 @@ export function sanitizeProfile(raw: unknown): TravelerProfile {
           .slice(0, 6)
       : undefined,
     bagHabit:
-      r.bagHabit === 'never' || r.bagHabit === 'sometimes' || r.bagHabit === 'usually' || r.bagHabit === 'always'
+      r.bagHabit === 'never' ||
+      r.bagHabit === 'if-needed' ||
+      r.bagHabit === 'sometimes' ||
+      r.bagHabit === 'usually' ||
+      r.bagHabit === 'always'
         ? r.bagHabit
+        : undefined,
+    acceptedModes: Array.isArray(r.acceptedModes)
+      ? (r.acceptedModes as unknown[]).filter(
+          (m): m is AcceptedMode => m === 'flights' || m === 'trains' || m === 'buses' || m === 'cars',
+        )
+      : undefined,
+    airportAccessMode:
+      r.airportAccessMode === 'transit' ||
+      r.airportAccessMode === 'rideshare' ||
+      r.airportAccessMode === 'taxi' ||
+      r.airportAccessMode === 'drive-park' ||
+      r.airportAccessMode === 'dropoff'
+        ? r.airportAccessMode
         : undefined,
     temperatureUnit: r.temperatureUnit === 'celsius' ? 'celsius' : 'fahrenheit',
     currency: typeof r.currency === 'string' && /^[A-Z]{3}$/.test(r.currency) ? r.currency : d.currency,

@@ -14,10 +14,14 @@ import { apiConfig } from '../services/config';
 import { getAuditLog, type AuditEntry } from '../services/approvalService';
 import type { RootTabParamList } from '../navigation/types';
 import {
+  ACCEPTED_MODE_LABELS,
+  AIRPORT_ACCESS_LABELS,
   BAG_HABIT_LABELS,
   DEFAULT_PROFILE,
   getProfile,
   saveProfile,
+  type AcceptedMode,
+  type AirportAccessMode,
   type BagHabit,
   type TransportationPriority,
   type TravelerProfile,
@@ -231,7 +235,20 @@ export function SettingsScreen() {
               >
                 <Ionicons name="remove" size={16} color={colors.primary} />
               </Pressable>
-              <Text style={styles.stepperValue}>{profile[key]} min</Text>
+              <TextInput
+                style={styles.stepperValueInput}
+                value={String(profile[key])}
+                keyboardType="numeric"
+                accessibilityLabel={`${label} in minutes — tap to type a custom number`}
+                onChangeText={(v) => {
+                  const n = parseInt(v.replace(/\D/g, ''), 10);
+                  if (Number.isFinite(n)) patchProfile({ [key]: n } as Partial<TravelerProfile>);
+                }}
+                onBlur={() =>
+                  patchProfile({ [key]: Math.min(max, Math.max(min, profile[key])) } as Partial<TravelerProfile>)
+                }
+              />
+              <Text style={styles.stepperUnit}>min</Text>
               <Pressable
                 onPress={() => patchProfile({ [key]: Math.min(max, profile[key] + step) } as Partial<TravelerProfile>)}
                 style={styles.stepperButton}
@@ -253,6 +270,32 @@ export function SettingsScreen() {
               onPress={() =>
                 patchProfile({ bagHabit: h, usuallyChecksBag: h === 'usually' || h === 'always' })
               }
+            />
+          ))}
+        </View>
+        <Text style={styles.fieldHint}>Acceptable travel modes (planner preselects these)</Text>
+        <View style={styles.prefGrid}>
+          {(Object.keys(ACCEPTED_MODE_LABELS) as AcceptedMode[]).map((m) => (
+            <Chip
+              key={m}
+              label={ACCEPTED_MODE_LABELS[m]}
+              selected={(profile.acceptedModes ?? []).includes(m)}
+              onPress={() => {
+                const current = profile.acceptedModes ?? [];
+                const next = current.includes(m) ? current.filter((x) => x !== m) : [...current, m];
+                patchProfile({ acceptedModes: next.length > 0 ? next : undefined });
+              }}
+            />
+          ))}
+        </View>
+        <Text style={styles.fieldHint}>Getting to the airport</Text>
+        <View style={styles.prefGrid}>
+          {(Object.keys(AIRPORT_ACCESS_LABELS) as AirportAccessMode[]).map((m) => (
+            <Chip
+              key={m}
+              label={AIRPORT_ACCESS_LABELS[m]}
+              selected={profile.airportAccessMode === m}
+              onPress={() => patchProfile({ airportAccessMode: m })}
             />
           ))}
         </View>
@@ -528,6 +571,20 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   stepperValue: { fontSize: 13, fontWeight: '700', color: colors.ink, minWidth: 58, textAlign: 'center' },
+  stepperValueInput: {
+    minWidth: 48,
+    textAlign: 'center',
+    fontSize: 13,
+    fontWeight: '800',
+    color: colors.ink,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    paddingVertical: 5,
+    paddingHorizontal: 4,
+    backgroundColor: colors.surface,
+  },
+  stepperUnit: { fontSize: 11, fontWeight: '700', color: colors.textMuted },
   fieldHint: { fontSize: 12, fontWeight: '700', color: colors.textSecondary, marginTop: spacing.md, marginBottom: 6 },
   dataActions: { flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' },
   importWrap: { gap: spacing.sm, marginTop: spacing.md },

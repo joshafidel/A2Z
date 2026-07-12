@@ -85,6 +85,25 @@ describe('onboarding profile fields', () => {
     expect(sanitizeProfile({}).onboardingDone).toBe(false); // first open → questions run
   });
 
+  it('new fields survive sanitize: accepted modes, airport access, if-needed bag habit', () => {
+    const p = sanitizeProfile({
+      acceptedModes: ['flights', 'submarines', 'trains'],
+      airportAccessMode: 'drive-park',
+      bagHabit: 'if-needed',
+    });
+    expect(p.acceptedModes).toEqual(['flights', 'trains']);
+    expect(p.airportAccessMode).toBe('drive-park');
+    expect(p.bagHabit).toBe('if-needed');
+  });
+
+  it('a 60-mile airport radius keeps PHL out of the New York list', async () => {
+    const { airportsNear, findCityCoords } = await import('../src/data/airports');
+    const nyc = findCityCoords('New York')!;
+    const codes = airportsNear({ lat: nyc.lat, lng: nyc.lng }, 60, 5).map((r) => r.airport.code);
+    expect(codes).toEqual(expect.arrayContaining(['JFK', 'LGA', 'EWR']));
+    expect(codes).not.toContain('PHL');
+  });
+
   it('airport ranking keeps only valid codes in order; bag habit + comfort survive', () => {
     const p = sanitizeProfile({
       airportRanking: ['lga', 'JFK', 'Newark??', 'ewr'],

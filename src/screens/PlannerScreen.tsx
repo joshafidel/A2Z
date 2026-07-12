@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -51,6 +51,7 @@ import { searchFlights } from '../services/flightService';
 import { searchTrains } from '../services/trainService';
 import { searchBuses } from '../services/busService';
 import { getCurrentLocation } from '../services/locationService';
+import { getProfile, type TravelerProfile } from '../services/preferencesService';
 import { getHotelRecommendations, hotelAreasFor } from '../services/hotelService';
 import { detectCityKey } from '../data/cities';
 import * as storage from '../services/storageService';
@@ -202,6 +203,22 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
   const [roundTrip, setRoundTrip] = useState(false);
   const [returnDate, setReturnDate] = useState<Date | undefined>();
 
+  // Traveler profile: what the welcome questions answered, the planner
+  // never re-asks — accepted modes preselect (and skip) the mode step,
+  // and the bag habit seeds the bag counter.
+  const [profile, setProfile] = useState<TravelerProfile>();
+  const autoModesRef = useRef(false);
+  const autoStationsRef = useRef(false);
+  useEffect(() => {
+    getProfile().then((p) => {
+      setProfile(p);
+      if (route.params?.bags === undefined && p.bagHabit) {
+        setBags(p.bagHabit === 'usually' || p.bagHabit === 'always' ? 1 : 0);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Search + selections ------------------------------------------------------
   const [search, setSearch] = useState<TripSearch>();
   const [results, setResults] = useState<TripSearchResults>();
@@ -296,6 +313,30 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
     setStepIndex((i) => i - 1);
   }, [stepIndex, navigation]);
 
+  // Auto-curation: the welcome questions already answered "which modes are
+  // OK", so the mode step preselects them and moves on (once per visit —
+  // going Back re-opens it for edits). Only viable modes for the distance
+  // are kept; if none of the accepted modes work here, the question shows.
+  useEffect(() => {
+    if (step !== 'mode' || autoModesRef.current || !profile || !modeViability) return;
+    const accepted = profile.acceptedModes ?? [];
+    if (accepted.length === 0 || groups.length > 0) return;
+    const viable = viableModesFor(modeViability.miles, modeViability.bothAmtrak);
+    const usable = accepted.filter((m) => viable.includes(m));
+    if (usable.length === 0) return;
+    autoModesRef.current = true;
+    setGroups(usable);
+    setTimeout(() => goNext(), 200);
+  }, [step, profile, modeViability, groups.length, goNext]);
+
+  // Same for the stations step: keep the defaults and continue.
+  useEffect(() => {
+    if (step !== 'stations' || !autoModesRef.current || autoStationsRef.current) return;
+    if (!stations || !stations.some((n) => n.enabled)) return;
+    autoStationsRef.current = true;
+    setTimeout(() => goNext(), 200);
+  }, [step, stations, goNext]);
+
   // Invalidate downstream choices when upstream answers change --------------
   const resetFromMode = () => {
     setTicket(undefined);
@@ -353,7 +394,15 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
       timeOfDay,
       travelers,
       bags,
-      preference: route.params?.preference ?? defaultPreference,
+      preference:
+        route.params?.preference ??
+        (profile?.transportationPriority === 'cheapest'
+          ? 'cheapest'
+          : profile?.transportationPriority === 'fastest'
+            ? 'fastest'
+            : profile?.transportationPriority === 'comfort'
+              ? 'easiest'
+              : defaultPreference),
       roundTrip,
       returnDate: roundTrip && returnDate ? fmtIsoDay(returnDate) : undefined,
     };
@@ -438,11 +487,18 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
       }
       const nodes: StationNode[] = [];
       if (groups.includes('flights')) {
-        for (const { airport, miles } of airportsNear(coords, 80, 4)) {
+        // Your ranked airports from the welcome questions come first.
+        const rank = profile?.airportRanking ?? [];
+        const near = [...airportsNear(coords, 80, 4)].sort((a, b) => {
+          const ra = rank.indexOf(a.airport.code);
+          const rb = rank.indexOf(b.airport.code);
+          return (ra === -1 ? 99 : ra) - (rb === -1 ? 99 : rb) || a.miles - b.miles;
+        });
+        for (const { airport, miles } of near) {
           nodes.push({
             id: `air-${airport.code}`,
             kind: 'flight',
-            name: `${airport.name} (${airport.code})`,
+            name: `${airport.name} (${airport.code})${rank[0] === airport.code ? ' · your #1' : ''}`,
             code: airport.code,
             miles,
             enabled: true,
@@ -890,42 +946,70 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
     if (searching) return <LoadingState message="Curating every way to get there…" />;
     return (
       <View style={[styles.stepBody, styles.dateStepBody]}>
-        <View style={styles.quickRow}>
-          <Chip
-            label="One-way"
-            icon="arrow-forward"
-            selected={!roundTrip}
+        {/* Prominent one-way / round-trip switch */}
+        <View style={styles.tripTypeSeg}>
+          <Pressable
             onPress={() => {
               setRoundTrip(false);
               setReturnDate(undefined);
             }}
-          />
-          <Chip
-            label="Round trip"
-            icon="repeat"
-            selected={roundTrip}
+            style={[styles.tripTypeHalf, !roundTrip && styles.tripTypeHalfActive]}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: !roundTrip }}
+          >
+            <Ionicons name="arrow-forward" size={16} color={!roundTrip ? '#FFFFFF' : colors.textSecondary} />
+            <Text style={[styles.tripTypeText, !roundTrip && styles.tripTypeTextActive]}>One-way</Text>
+          </Pressable>
+          <Pressable
             onPress={() => setRoundTrip(true)}
-          />
+            style={[styles.tripTypeHalf, roundTrip && styles.tripTypeHalfActive]}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: roundTrip }}
+          >
+            <Ionicons name="repeat" size={16} color={roundTrip ? '#FFFFFF' : colors.textSecondary} />
+            <Text style={[styles.tripTypeText, roundTrip && styles.tripTypeTextActive]}>Round trip</Text>
+          </Pressable>
         </View>
-        {roundTrip ? (
-          <>
-            <CalendarPicker
-              selected={date}
-              onSelect={setDate}
-              rangeEnd={returnDate}
-              onSelectRange={(start, end) => {
-                setDate(start);
-                setReturnDate(end);
-              }}
+
+        {/* Round trip: depart → return summary, arrow points at what's next */}
+        {roundTrip && (
+          <View style={styles.rtRow}>
+            <View style={[styles.rtBox, !date && styles.rtBoxNeeded]}>
+              <Text style={styles.rtBoxLabel}>DEPART</Text>
+              <Text style={[styles.rtBoxValue, !date && styles.rtBoxValueNeeded]}>
+                {date
+                  ? date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+                  : 'Tap a day below'}
+              </Text>
+            </View>
+            <Ionicons
+              name="arrow-forward"
+              size={22}
+              color={date && !returnDate ? colors.primary : colors.textMuted}
             />
-            <Text style={styles.rangeHint}>
-              {date && returnDate
-                ? `Depart ${date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })} → return ${returnDate.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}`
-                : date
-                  ? 'Now tap your return day to close the window.'
-                  : 'Tap your departure day, then your return day.'}
-            </Text>
-          </>
+            <View style={[styles.rtBox, date && !returnDate && styles.rtBoxNeeded]}>
+              <Text style={styles.rtBoxLabel}>RETURN</Text>
+              <Text style={[styles.rtBoxValue, date && !returnDate && styles.rtBoxValueNeeded]}>
+                {returnDate
+                  ? returnDate.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+                  : date
+                    ? '← now tap your return day'
+                    : '—'}
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {roundTrip ? (
+          <CalendarPicker
+            selected={date}
+            onSelect={setDate}
+            rangeEnd={returnDate}
+            onSelectRange={(start, end) => {
+              setDate(start);
+              setReturnDate(end);
+            }}
+          />
         ) : (
           <CalendarPicker selected={date} onSelect={setDate} />
         )}
@@ -2149,13 +2233,40 @@ const styles = StyleSheet.create({
   buyNowText: { fontSize: 12, color: colors.textSecondary, marginTop: 2, lineHeight: 17 },
   hotelAskHint: { fontSize: 12, color: colors.textMuted, lineHeight: 16 },
   subLabel: { ...typography.micro, color: colors.textMuted },
-  rangeHint: {
-    fontSize: 12.5,
-    fontWeight: '600',
-    color: colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 17,
+  tripTypeSeg: {
+    flexDirection: 'row',
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radii.pill,
+    padding: 4,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
+  tripTypeHalf: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    borderRadius: radii.pill,
+  },
+  tripTypeHalfActive: { backgroundColor: colors.primary },
+  tripTypeText: { fontSize: 14, fontWeight: '800', color: colors.textSecondary },
+  tripTypeTextActive: { color: '#FFFFFF' },
+  rtRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  rtBox: {
+    flex: 1,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+  },
+  rtBoxNeeded: { borderColor: colors.primary, borderWidth: 2 },
+  rtBoxLabel: { fontSize: 9.5, fontWeight: '900', letterSpacing: 0.8, color: colors.textMuted },
+  rtBoxValue: { fontSize: 13.5, fontWeight: '700', color: colors.ink, marginTop: 2 },
+  rtBoxValueNeeded: { color: colors.primary },
   countRow: { flexDirection: 'row', gap: spacing.md },
   counter: {
     flex: 1,

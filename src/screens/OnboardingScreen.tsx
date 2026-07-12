@@ -5,15 +5,19 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppButton } from '../components/AppButton';
-import { Chip } from '../components/Chip';
-import { airportsNear, findCityCoords, type Airport } from '../data/airports';
+import { DragRankList } from '../components/DragRankList';
+import { airportsNear, findCityCoords } from '../data/airports';
 import type { OnboardingScreenProps } from '../navigation/types';
 import { guessHomeCity } from '../services/locationService';
 import {
+  ACCEPTED_MODE_LABELS,
+  AIRPORT_ACCESS_LABELS,
   BAG_HABIT_LABELS,
   DEFAULT_PROFILE,
   getProfile,
   saveProfile,
+  type AcceptedMode,
+  type AirportAccessMode,
   type BagHabit,
   type TransportationPriority,
   type TravelerProfile,
@@ -21,9 +25,12 @@ import {
 import { RIDESHARE_APPS, setConnectedRideshareApps } from '../services/storageService';
 import { colors, radii, spacing, typography } from '../theme';
 
-type StepKey = 'home' | 'airports' | 'rideshare' | 'security' | 'bag' | 'timing' | 'priority';
+type StepKey = 'home' | 'modes' | 'access' | 'rideshare' | 'security' | 'bag' | 'timing' | 'priority';
 
-const STEPS: StepKey[] = ['home', 'airports', 'rideshare', 'security', 'bag', 'timing', 'priority'];
+const STEPS: StepKey[] = ['home', 'modes', 'access', 'rideshare', 'security', 'bag', 'timing', 'priority'];
+
+/** Airports within a metro-sized radius — 60 mi keeps PHL out of NYC. */
+const AIRPORT_RADIUS_MILES = 60;
 
 const PRIORITY_OPTIONS: Array<[TransportationPriority, string, string]> = [
   ['cheapest', 'Cheapest', 'Save the money'],
@@ -33,9 +40,10 @@ const PRIORITY_OPTIONS: Array<[TransportationPriority, string, string]> = [
 ];
 
 /**
- * First-open welcome: one question at a time, every one skippable (or
- * skip the whole thing). Answers land in the traveler profile — saved in
- * this browser, editable any time in Settings — and shape every plan.
+ * First-open welcome: one question at a time, every one skippable (or the
+ * whole thing). Answers land in the traveler profile — saved in this
+ * browser, editable any time in Settings — and the planner uses them so
+ * you are never re-asked what you already answered.
  */
 export function OnboardingScreen({ navigation }: OnboardingScreenProps) {
   const insets = useSafeAreaInsets();
@@ -45,14 +53,42 @@ export function OnboardingScreen({ navigation }: OnboardingScreenProps) {
   const [cityGuessed, setCityGuessed] = useState(false);
   const [locBusy, setLocBusy] = useState(true);
   const [homeCoords, setHomeCoords] = useState<{ lat: number; lng: number }>();
-  const [nearby, setNearby] = useState<Airport[]>([]);
-  const [ranking, setRanking] = useState<string[]>([]);
+  const [ranking, setRanking] = useState<Array<{ id: string; title: string; subtitle?: string }>>([]);
   const [apps, setApps] = useState<string[]>([]);
+  const [modes, setModes] = useState<AcceptedMode[]>([]);
   const [precheck, setPrecheck] = useState(false);
   const [clear, setClear] = useState(false);
 
-  // Start from whatever is saved (redo case), then try to GUESS the home
-  // city from the current location — always editable, never silently kept.
+  /** Airports near the typed/guessed city — pops up as soon as we know it. */
+  const refreshAirports = (
+    city: string,
+    coordsOverride?: { lat: number; lng: number },
+    savedOrder?: string[],
+  ) => {
+    const entry = findCityCoords(city);
+    const coords = entry ? { lat: entry.lat, lng: entry.lng } : coordsOverride;
+    if (!coords) {
+      setRanking([]);
+      return;
+    }
+    const near = airportsNear(coords, AIRPORT_RADIUS_MILES, 5).map((r) => r.airport);
+    const items = near.map((a) => ({
+      id: a.code,
+      title: `${a.code} — ${a.name}`,
+      subtitle: a.city,
+    }));
+    if (savedOrder && savedOrder.length > 0) {
+      items.sort((x, y) => {
+        const xi = savedOrder.indexOf(x.id);
+        const yi = savedOrder.indexOf(y.id);
+        return (xi === -1 ? 99 : xi) - (yi === -1 ? 99 : yi);
+      });
+    }
+    setRanking(items);
+  };
+
+  // Start from whatever is saved (redo case), then GUESS the home city
+  // from the current location — clearly labeled, always editable.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -60,35 +96,27 @@ export function OnboardingScreen({ navigation }: OnboardingScreenProps) {
       if (cancelled) return;
       setProfile(p);
       setHomeCity(p.homeCity ?? '');
-      setRanking(p.airportRanking ?? []);
       setPrecheck(p.hasTsaPrecheck);
       setClear(p.hasClear);
+      setModes(p.acceptedModes ?? []);
+      if (p.homeCity) refreshAirports(p.homeCity, undefined, p.airportRanking);
       const guess = await guessHomeCity();
       if (cancelled) return;
       setLocBusy(false);
-      if (guess && !p.homeCity) {
-        setHomeCity(guess.city);
-        setCityGuessed(true);
+      if (guess) {
+        setHomeCoords({ lat: guess.lat, lng: guess.lng });
+        if (!p.homeCity) {
+          setHomeCity(guess.city);
+          setCityGuessed(true);
+          refreshAirports(guess.city, { lat: guess.lat, lng: guess.lng }, p.airportRanking);
+        }
       }
-      if (guess) setHomeCoords({ lat: guess.lat, lng: guess.lng });
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  /** Airports near the (typed or guessed) home city, for the ranking step. */
-  const loadNearby = (city: string) => {
-    const entry = findCityCoords(city);
-    const coords = entry ? { lat: entry.lat, lng: entry.lng } : homeCoords;
-    setNearby(coords ? airportsNear(coords, 90, 5).map((r) => r.airport) : []);
-  };
-
-  // Entering the airports step always reflects the latest city answer.
-  useEffect(() => {
-    if (STEPS[step] === 'airports') loadNearby(homeCity);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step]);
+  }, []);
 
   const finish = async (answers: TravelerProfile) => {
     await saveProfile({ ...answers, onboardingDone: true });
@@ -105,43 +133,81 @@ export function OnboardingScreen({ navigation }: OnboardingScreenProps) {
 
   const key = STEPS[step];
 
-  const toggleRank = (code: string) =>
-    setRanking((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));
-
-  const stepper = (
+  /** Buffer row in the Settings style: −  [tappable value]  + */
+  const stepperRow = (
     label: string,
-    value: number,
+    prefKey: 'domesticBufferMinutes' | 'internationalBufferMinutes' | 'trafficUncertaintyMinutes',
     delta: number,
     min: number,
     max: number,
-    onChange: (v: number) => void,
-  ) => (
-    <View style={styles.stepperRow}>
-      <Text style={styles.stepperLabel}>{label}</Text>
-      <View style={styles.stepperControls}>
-        <Pressable
-          onPress={() => onChange(Math.max(min, value - delta))}
-          style={styles.stepperButton}
-          accessibilityLabel={`Decrease ${label}`}
-          accessibilityRole="button"
-        >
-          <Ionicons name="remove" size={18} color={colors.primary} />
-        </Pressable>
-        <Text style={styles.stepperValue}>{value} min</Text>
-        <Pressable
-          onPress={() => onChange(Math.min(max, value + delta))}
-          style={styles.stepperButton}
-          accessibilityLabel={`Increase ${label}`}
-          accessibilityRole="button"
-        >
-          <Ionicons name="add" size={18} color={colors.primary} />
-        </Pressable>
+  ) => {
+    const value = profile[prefKey];
+    const clamp = (v: number) => Math.min(max, Math.max(min, v));
+    return (
+      <View style={styles.stepperRow}>
+        <Text style={styles.stepperLabel}>{label}</Text>
+        <View style={styles.stepperControls}>
+          <Pressable
+            onPress={() => setProfile((p) => ({ ...p, [prefKey]: clamp(value - delta) }))}
+            style={styles.stepperButton}
+            accessibilityLabel={`Decrease ${label}`}
+            accessibilityRole="button"
+          >
+            <Ionicons name="remove" size={18} color={colors.primary} />
+          </Pressable>
+          <TextInput
+            style={styles.stepperInput}
+            value={String(value)}
+            keyboardType="numeric"
+            accessibilityLabel={`${label} in minutes — tap to type a custom number`}
+            onChangeText={(v) => {
+              const n = parseInt(v.replace(/\D/g, ''), 10);
+              setProfile((p) => ({ ...p, [prefKey]: Number.isFinite(n) ? n : min }));
+            }}
+            onEndEditing={() => setProfile((p) => ({ ...p, [prefKey]: clamp(p[prefKey]) }))}
+            onBlur={() => setProfile((p) => ({ ...p, [prefKey]: clamp(p[prefKey]) }))}
+          />
+          <Text style={styles.stepperUnit}>min</Text>
+          <Pressable
+            onPress={() => setProfile((p) => ({ ...p, [prefKey]: clamp(value + delta) }))}
+            style={styles.stepperButton}
+            accessibilityLabel={`Increase ${label}`}
+            accessibilityRole="button"
+          >
+            <Ionicons name="add" size={18} color={colors.primary} />
+          </Pressable>
+        </View>
       </View>
-    </View>
+    );
+  };
+
+  const checkRow = (
+    label: string,
+    checked: boolean,
+    onToggle: () => void,
+    subtitle?: string,
+  ) => (
+    <Pressable
+      key={label}
+      onPress={onToggle}
+      style={styles.checkRow}
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked }}
+    >
+      <View style={styles.flex1}>
+        <Text style={styles.checkLabel}>{label}</Text>
+        {subtitle ? <Text style={styles.checkSub}>{subtitle}</Text> : null}
+      </View>
+      <Ionicons
+        name={checked ? 'checkmark-circle' : 'ellipse-outline'}
+        size={26}
+        color={checked ? colors.success : colors.textMuted}
+      />
+    </Pressable>
   );
 
   return (
-    <View style={styles.flex}>
+    <View style={styles.screen}>
       <LinearGradient
         colors={[colors.navy, '#1E2B66', colors.primaryDark]}
         start={{ x: 0, y: 0 }}
@@ -166,7 +232,7 @@ export function OnboardingScreen({ navigation }: OnboardingScreenProps) {
       </LinearGradient>
 
       <ScrollView
-        style={styles.flex}
+        style={styles.flexBg}
         contentContainerStyle={styles.body}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
@@ -188,64 +254,75 @@ export function OnboardingScreen({ navigation }: OnboardingScreenProps) {
               onChangeText={(v) => {
                 setHomeCity(v);
                 setCityGuessed(false);
+                refreshAirports(v, homeCoords, profile.airportRanking);
               }}
               placeholder={locBusy ? 'Finding your city…' : 'New York'}
               placeholderTextColor={colors.textMuted}
               accessibilityLabel="Your home city"
             />
-            <AppButton
-              label="Next"
-              icon="arrow-forward"
-              onPress={() => {
-                loadNearby(homeCity);
-                next({ homeCity: homeCity.trim() === '' ? undefined : homeCity.trim() });
-              }}
-            />
-          </>
-        )}
-
-        {key === 'airports' && (
-          <>
-            <Text style={styles.question}>Rank your preferred airports</Text>
-            <Text style={styles.hint}>
-              {nearby.length > 0
-                ? `Tap in order of preference — first tap is your favorite. Near ${homeCity.trim() || 'you'}:`
-                : 'Enter a home city on the previous question to see nearby airports — or skip this.'}
-            </Text>
-            {nearby.map((a) => {
-              const pos = ranking.indexOf(a.code);
-              return (
-                <Pressable
-                  key={a.code}
-                  onPress={() => toggleRank(a.code)}
-                  style={[styles.rankRow, pos >= 0 && styles.rankRowActive]}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: pos >= 0 }}
-                >
-                  <View style={[styles.rankBadge, pos >= 0 && styles.rankBadgeActive]}>
-                    <Text style={[styles.rankBadgeText, pos >= 0 && styles.rankBadgeTextActive]}>
-                      {pos >= 0 ? pos + 1 : '·'}
-                    </Text>
-                  </View>
-                  <View style={styles.flex}>
-                    <Text style={styles.rankName}>
-                      {a.code} — {a.name}
-                    </Text>
-                    <Text style={styles.rankMeta}>{a.city}</Text>
-                  </View>
-                </Pressable>
-              );
-            })}
+            {ranking.length > 0 && (
+              <>
+                <Text style={styles.fieldLabel}>
+                  Your airports, in preference order — drag the handle to reorder
+                </Text>
+                <DragRankList
+                  items={ranking}
+                  onReorder={(ids) =>
+                    setRanking((prev) => ids.map((id) => prev.find((i) => i.id === id)!))
+                  }
+                />
+              </>
+            )}
             <AppButton
               label="Next"
               icon="arrow-forward"
               onPress={() =>
                 next({
-                  airportRanking: ranking.length > 0 ? ranking : undefined,
-                  homeAirportCode: ranking[0] ?? profile.homeAirportCode,
+                  homeCity: homeCity.trim() === '' ? undefined : homeCity.trim(),
+                  airportRanking: ranking.length > 0 ? ranking.map((r) => r.id) : undefined,
+                  homeAirportCode: ranking[0]?.id ?? profile.homeAirportCode,
                 })
               }
             />
+          </>
+        )}
+
+        {key === 'modes' && (
+          <>
+            <Text style={styles.question}>Which ways of traveling are OK with you?</Text>
+            <Text style={styles.hint}>
+              The planner will only suggest modes you accept — and it won't ask again on every trip.
+            </Text>
+            {(Object.keys(ACCEPTED_MODE_LABELS) as AcceptedMode[]).map((m) =>
+              checkRow(ACCEPTED_MODE_LABELS[m], modes.includes(m), () =>
+                setModes((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m])),
+              ),
+            )}
+            <AppButton
+              label="Next"
+              icon="arrow-forward"
+              onPress={() => next({ acceptedModes: modes.length > 0 ? modes : undefined })}
+            />
+          </>
+        )}
+
+        {key === 'access' && (
+          <>
+            <Text style={styles.question}>How do you prefer to get to the airport?</Text>
+            <Text style={styles.hint}>Seeds the airport-leg comparison on every trip.</Text>
+            <View style={styles.answerCol}>
+              {(Object.keys(AIRPORT_ACCESS_LABELS) as AirportAccessMode[]).map((m) => (
+                <Pressable
+                  key={m}
+                  onPress={() => next({ airportAccessMode: m })}
+                  style={styles.optionRow}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.optionLabel}>{AIRPORT_ACCESS_LABELS[m]}</Text>
+                  <Ionicons name="arrow-forward" size={16} color={colors.primary} />
+                </Pressable>
+              ))}
+            </View>
           </>
         )}
 
@@ -255,20 +332,11 @@ export function OnboardingScreen({ navigation }: OnboardingScreenProps) {
             <Text style={styles.hint}>
               Ride suggestions only come from apps you actually have. Pick any, or none.
             </Text>
-            <View style={styles.chipWrap}>
-              {RIDESHARE_APPS.map((app) => (
-                <Chip
-                  key={app}
-                  label={app}
-                  selected={apps.includes(app)}
-                  onPress={() =>
-                    setApps((prev) =>
-                      prev.includes(app) ? prev.filter((a) => a !== app) : [...prev, app],
-                    )
-                  }
-                />
-              ))}
-            </View>
+            {RIDESHARE_APPS.map((app) =>
+              checkRow(app, apps.includes(app), () =>
+                setApps((prev) => (prev.includes(app) ? prev.filter((a) => a !== app) : [...prev, app])),
+              ),
+            )}
             <AppButton label="Next" icon="arrow-forward" onPress={() => next()} />
           </>
         )}
@@ -279,27 +347,8 @@ export function OnboardingScreen({ navigation }: OnboardingScreenProps) {
             <Text style={styles.hint}>
               PreCheck saves ~15 minutes and CLEAR ~5 more — the leave-time math uses both.
             </Text>
-            {(
-              [
-                ['TSA PreCheck', precheck, setPrecheck],
-                ['CLEAR', clear, setClear],
-              ] as Array<[string, boolean, (v: boolean) => void]>
-            ).map(([label, value, set]) => (
-              <Pressable
-                key={label}
-                onPress={() => set(!value)}
-                style={styles.toggleRow}
-                accessibilityRole="switch"
-                accessibilityState={{ checked: value }}
-              >
-                <Text style={[styles.toggleLabel, styles.flex]}>{label}</Text>
-                <Ionicons
-                  name={value ? 'checkmark-circle' : 'ellipse-outline'}
-                  size={26}
-                  color={value ? colors.success : colors.textMuted}
-                />
-              </Pressable>
-            ))}
+            {checkRow('TSA PreCheck', precheck, () => setPrecheck((v) => !v))}
+            {checkRow('CLEAR', clear, () => setClear((v) => !v))}
             <AppButton
               label="Next"
               icon="arrow-forward"
@@ -316,14 +365,17 @@ export function OnboardingScreen({ navigation }: OnboardingScreenProps) {
             </Text>
             <View style={styles.answerCol}>
               {(Object.keys(BAG_HABIT_LABELS) as BagHabit[]).map((h) => (
-                <AppButton
+                <Pressable
                   key={h}
-                  label={BAG_HABIT_LABELS[h]}
-                  variant={h === 'sometimes' ? 'primary' : 'secondary'}
                   onPress={() =>
                     next({ bagHabit: h, usuallyChecksBag: h === 'usually' || h === 'always' })
                   }
-                />
+                  style={styles.optionRow}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.optionLabel}>{BAG_HABIT_LABELS[h]}</Text>
+                  <Ionicons name="arrow-forward" size={16} color={colors.primary} />
+                </Pressable>
               ))}
             </View>
           </>
@@ -333,17 +385,11 @@ export function OnboardingScreen({ navigation }: OnboardingScreenProps) {
           <>
             <Text style={styles.question}>How much airport buffer do you like?</Text>
             <Text style={styles.hint}>
-              Your defaults for every flight plan — adjust with the − and + buttons.
+              Use − and +, or tap a number to type your own.
             </Text>
-            {stepper('Domestic airport buffer', profile.domesticBufferMinutes, 15, 75, 240, (v) =>
-              setProfile((p) => ({ ...p, domesticBufferMinutes: v })),
-            )}
-            {stepper('International airport buffer', profile.internationalBufferMinutes, 15, 120, 300, (v) =>
-              setProfile((p) => ({ ...p, internationalBufferMinutes: v })),
-            )}
-            {stepper('Traffic uncertainty', profile.trafficUncertaintyMinutes, 5, 0, 60, (v) =>
-              setProfile((p) => ({ ...p, trafficUncertaintyMinutes: v })),
-            )}
+            {stepperRow('Domestic airport buffer', 'domesticBufferMinutes', 15, 75, 240)}
+            {stepperRow('International airport buffer', 'internationalBufferMinutes', 15, 120, 300)}
+            {stepperRow('Traffic uncertainty', 'trafficUncertaintyMinutes', 5, 0, 60)}
             <AppButton label="Next" icon="arrow-forward" onPress={() => next()} />
           </>
         )}
@@ -357,12 +403,12 @@ export function OnboardingScreen({ navigation }: OnboardingScreenProps) {
                 <Pressable
                   key={p}
                   onPress={() => next({ transportationPriority: p })}
-                  style={styles.priorityRow}
+                  style={styles.optionRow}
                   accessibilityRole="button"
                 >
-                  <View style={styles.flex}>
-                    <Text style={styles.priorityLabel}>{label}</Text>
-                    <Text style={styles.prioritySub}>{sub}</Text>
+                  <View style={styles.flex1}>
+                    <Text style={styles.optionLabel}>{label}</Text>
+                    <Text style={styles.optionSub}>{sub}</Text>
                   </View>
                   <Ionicons name="arrow-forward" size={16} color={colors.primary} />
                 </Pressable>
@@ -395,7 +441,9 @@ export function OnboardingScreen({ navigation }: OnboardingScreenProps) {
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: colors.background },
+  screen: { flex: 1, backgroundColor: colors.background },
+  flexBg: { flex: 1 },
+  flex1: { flex: 1 },
   hero: {
     paddingHorizontal: spacing.xl,
     paddingBottom: spacing.xl,
@@ -425,19 +473,19 @@ const styles = StyleSheet.create({
     color: colors.text,
     backgroundColor: colors.surface,
   },
-  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginVertical: spacing.sm },
   answerCol: { gap: spacing.sm, marginTop: spacing.sm },
-  toggleRow: {
+  checkRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
     paddingVertical: spacing.md,
-    minHeight: 52,
+    minHeight: 54,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
-  toggleLabel: { fontSize: 15, fontWeight: '700', color: colors.text },
-  rankRow: {
+  checkLabel: { fontSize: 15, fontWeight: '700', color: colors.text },
+  checkSub: { fontSize: 12, color: colors.textSecondary, marginTop: 1 },
+  optionRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
@@ -445,24 +493,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radii.md,
-    padding: spacing.md,
-    minHeight: 56,
+    padding: spacing.lg,
+    minHeight: 58,
   },
-  rankRowActive: { borderColor: colors.primary, borderWidth: 2 },
-  rankBadge: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    borderWidth: 1.5,
-    borderColor: colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  rankBadgeActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-  rankBadgeText: { fontSize: 13, fontWeight: '900', color: colors.textMuted },
-  rankBadgeTextActive: { color: '#FFFFFF' },
-  rankName: { fontSize: 14, fontWeight: '700', color: colors.ink },
-  rankMeta: { fontSize: 11.5, color: colors.textMuted, marginTop: 1 },
+  optionLabel: { fontSize: 15, fontWeight: '800', color: colors.ink },
+  optionSub: { fontSize: 12, color: colors.textSecondary, marginTop: 1 },
   stepperRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -483,20 +518,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  stepperValue: { fontSize: 15, fontWeight: '800', color: colors.ink, minWidth: 64, textAlign: 'center' },
-  priorityRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    backgroundColor: colors.surface,
+  stepperInput: {
+    minWidth: 52,
+    textAlign: 'center',
+    fontSize: 15,
+    fontWeight: '800',
+    color: colors.ink,
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radii.md,
-    padding: spacing.lg,
-    minHeight: 60,
+    paddingVertical: 7,
+    paddingHorizontal: 6,
+    backgroundColor: colors.surface,
   },
-  priorityLabel: { fontSize: 15, fontWeight: '800', color: colors.ink },
-  prioritySub: { fontSize: 12, color: colors.textSecondary, marginTop: 1 },
+  stepperUnit: { fontSize: 12, fontWeight: '700', color: colors.textMuted },
   footerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
