@@ -11,6 +11,12 @@ export type TransportationPriority = 'fastest' | 'cheapest' | 'balanced';
 
 export interface TravelerProfile {
   version: 1;
+  /** Set once the first-run questions were answered (or skipped). */
+  onboardingDone: boolean;
+  /** Where the traveler usually starts from. */
+  homeCity?: string;
+  /** Preferred departing airport (IATA code, e.g. "JFK"). */
+  homeAirportCode?: string;
   temperatureUnit: 'fahrenheit' | 'celsius';
   currency: string; // ISO code, display only
   hasTsaPrecheck: boolean;
@@ -27,6 +33,7 @@ export interface TravelerProfile {
 
 export const DEFAULT_PROFILE: TravelerProfile = {
   version: 1,
+  onboardingDone: false,
   temperatureUnit: 'fahrenheit',
   currency: 'USD',
   hasTsaPrecheck: false,
@@ -51,6 +58,13 @@ export function sanitizeProfile(raw: unknown): TravelerProfile {
   const r = raw as Record<string, unknown>;
   return {
     version: 1,
+    onboardingDone: bool(r.onboardingDone, d.onboardingDone),
+    homeCity:
+      typeof r.homeCity === 'string' && r.homeCity.trim() !== '' ? r.homeCity.trim() : undefined,
+    homeAirportCode:
+      typeof r.homeAirportCode === 'string' && /^[A-Za-z]{3}$/.test(r.homeAirportCode.trim())
+        ? r.homeAirportCode.trim().toUpperCase()
+        : undefined,
     temperatureUnit: r.temperatureUnit === 'celsius' ? 'celsius' : 'fahrenheit',
     currency: typeof r.currency === 'string' && /^[A-Z]{3}$/.test(r.currency) ? r.currency : d.currency,
     hasTsaPrecheck: bool(r.hasTsaPrecheck, d.hasTsaPrecheck),

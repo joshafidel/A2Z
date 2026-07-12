@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useNavigation, type NavigationProp } from '@react-navigation/native';
 import React, { useEffect, useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,6 +12,7 @@ import { useTrip } from '../context/TripContext';
 import { BUILD_INFO } from '../buildInfo';
 import { apiConfig } from '../services/config';
 import { getAuditLog, type AuditEntry } from '../services/approvalService';
+import type { RootTabParamList } from '../navigation/types';
 import {
   DEFAULT_PROFILE,
   getProfile,
@@ -34,6 +36,7 @@ const RIDESHARE_META: Record<string, { icon: keyof typeof Ionicons.glyphMap; not
 /** Settings / preferences: default optimization + integration status. */
 export function SettingsScreen() {
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation<NavigationProp<RootTabParamList>>();
   const { defaultPreference, setDefaultPreference, savedTrips, refreshTrips } = useTrip();
   const [connectedApps, setConnectedApps] = useState<string[]>([...RIDESHARE_APPS]);
 
@@ -121,7 +124,7 @@ export function SettingsScreen() {
     { name: 'Weather (Open-Meteo)', state: 'working', note: 'Real forecasts for your travel dates — shapes walk-vs-ride advice.' },
     { name: 'Road routing (OSRM + Nominatim)', state: 'working', note: 'Real driving distances and address lookup.' },
     { name: 'Transit routing (Transitous)', state: 'working', note: 'Real subway/bus itineraries from public GTFS feeds.' },
-    { name: 'Uber / Lyft handoff', state: 'working', note: 'Opens the ride app with pickup & drop-off already filled.' },
+    { name: 'Uber / Lyft handoff', state: 'working', note: 'Opens the ride app to book your airport leg.' },
     { name: 'Google Routes', state: keyed(Boolean(apiConfig.googleMapsApiKey)), envVar: 'EXPO_PUBLIC_GOOGLE_MAPS_API_KEY', note: 'Sharper transit routes with real fares and clock times.' },
     { name: 'Anthropic (Claude)', state: keyed(Boolean(process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY)), envVar: 'EXPO_PUBLIC_ANTHROPIC_API_KEY', note: 'AI concierge, packing lists, ride-price calibration, trip import.' },
     { name: 'aviationstack', state: keyed(Boolean(apiConfig.aviationstackApiKey)), envVar: 'EXPO_PUBLIC_AVIATIONSTACK_API_KEY', note: 'Real-time flight delay/cancellation/gate alerts.' },
@@ -245,6 +248,19 @@ export function SettingsScreen() {
             />
           ))}
         </View>
+        {profile.homeCity || profile.homeAirportCode ? (
+          <Text style={styles.fieldHint}>
+            Home: {profile.homeCity ?? '—'}
+            {profile.homeAirportCode ? ` · ${profile.homeAirportCode}` : ''}
+          </Text>
+        ) : null}
+        <AppButton
+          label="Redo the welcome questions"
+          icon="sparkles-outline"
+          variant="ghost"
+          small
+          onPress={() => navigation.navigate('PlanTab', { screen: 'Onboarding' })}
+        />
       </Card>
 
       <Card>

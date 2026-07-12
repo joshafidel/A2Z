@@ -14,6 +14,8 @@ import { HomeScreen } from './src/screens/HomeScreen';
 import { PlannerScreen } from './src/screens/PlannerScreen';
 import { ImportTripScreen } from './src/screens/ImportTripScreen';
 import { CreateTripScreen } from './src/screens/CreateTripScreen';
+import { OnboardingScreen } from './src/screens/OnboardingScreen';
+import { TripChatScreen } from './src/screens/TripChatScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
 import { colors } from './src/theme';
 
@@ -35,6 +37,12 @@ function PlanStack() {
       <Stack.Screen name="Planner" component={PlannerScreen} options={{ headerShown: false }} />
       <Stack.Screen name="ImportTrip" component={ImportTripScreen} options={{ headerShown: false }} />
       <Stack.Screen name="CreateTrip" component={CreateTripScreen} options={{ headerShown: false }} />
+      <Stack.Screen name="TripChat" component={TripChatScreen} options={{ headerShown: false }} />
+      <Stack.Screen
+        name="Onboarding"
+        component={OnboardingScreen}
+        options={{ headerShown: false, gestureEnabled: false }}
+      />
     </Stack.Navigator>
   );
 }

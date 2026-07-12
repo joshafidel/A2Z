@@ -10,6 +10,7 @@ import { PlaceInput } from '../components/PlaceInput';
 import { useTrip } from '../context/TripContext';
 import type { HomeScreenProps } from '../navigation/types';
 import { getCurrentLocation } from '../services/locationService';
+import { getProfile } from '../services/preferencesService';
 import { colors, radii, shadows, spacing, typography } from '../theme';
 import type { Place } from '../types';
 import { formatCountdown, formatDate, formatMoney, formatTime } from '../utils/time';
@@ -25,13 +26,32 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
   const [origin, setOrigin] = useState<Place>();
   const [locating, setLocating] = useState(true);
 
-  // Your current address is pulled in automatically as the starting point.
+  // First open: run the one-question-at-a-time welcome. Answers persist in
+  // the traveler profile and shape every later plan.
   useEffect(() => {
     let cancelled = false;
-    getCurrentLocation().then((r) => {
+    getProfile().then((p) => {
+      if (!cancelled && !p.onboardingDone) navigation.navigate('Onboarding');
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Your current address is pulled in automatically as the starting point;
+  // the profile's home city is the fallback when location is unavailable.
+  useEffect(() => {
+    let cancelled = false;
+    getCurrentLocation().then(async (r) => {
       if (cancelled) return;
       setLocating(false);
-      if (r.ok) setOrigin({ ...r.data, label: r.data.address });
+      if (r.ok) {
+        setOrigin({ ...r.data, label: r.data.address });
+        return;
+      }
+      const p = await getProfile();
+      if (!cancelled && p.homeCity) setOrigin({ address: p.homeCity, label: p.homeCity });
     });
     return () => {
       cancelled = true;
@@ -100,8 +120,16 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
       </View>
 
       <Pressable
-        onPress={() => navigation.navigate('ImportTrip')}
+        onPress={() => navigation.navigate('TripChat')}
         style={styles.importLink}
+        accessibilityRole="button"
+      >
+        <Ionicons name="chatbubble-ellipses-outline" size={15} color={colors.primary} />
+        <Text style={styles.importLinkText}>Tell A2Z what you need — it curates the options</Text>
+      </Pressable>
+      <Pressable
+        onPress={() => navigation.navigate('ImportTrip')}
+        style={[styles.importLink, styles.createLink]}
         accessibilityRole="button"
       >
         <Ionicons name="document-text-outline" size={15} color={colors.primary} />

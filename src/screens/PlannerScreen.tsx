@@ -189,16 +189,16 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
   // Interview answers (from/to may arrive pre-filled from the home page) ----
   const [origin, setOrigin] = useState<Place | undefined>(route.params?.origin);
   const [destination, setDestination] = useState<Place | undefined>(route.params?.destination);
-  const [needHotel, setNeedHotel] = useState(false);
+  const [needHotel, setNeedHotel] = useState(route.params?.needHotel ?? false);
   const [homePlace, setHomePlace] = useState<Place>();
   const [locating, setLocating] = useState(false);
   const [stepError, setStepError] = useState<string>();
   const [date, setDate] = useState<Date | undefined>(() =>
     route.params?.importedDate ? new Date(`${route.params.importedDate}T12:00:00`) : undefined,
   );
-  const [timeOfDay, setTimeOfDay] = useState<TimeOfDay>();
-  const [travelers, setTravelers] = useState(1);
-  const [bags, setBags] = useState(1);
+  const [timeOfDay, setTimeOfDay] = useState<TimeOfDay | undefined>(route.params?.timeOfDay);
+  const [travelers, setTravelers] = useState(route.params?.travelers ?? 1);
+  const [bags, setBags] = useState(route.params?.bags ?? 1);
 
   // Search + selections ------------------------------------------------------
   const [search, setSearch] = useState<TripSearch>();
@@ -344,7 +344,7 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
       timeOfDay,
       travelers,
       bags,
-      preference: defaultPreference,
+      preference: route.params?.preference ?? defaultPreference,
     };
     setSearch(s);
     resetFromSearch();
@@ -1611,7 +1611,7 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
               </View>
             </View>
 
-            {/* One-tap handoff: opens the ride app with pickup & drop-off filled */}
+            {/* One-tap handoff: opens the ride app for this leg */}
             {(o.provider === 'Uber' || o.provider === 'Uber Shuttle' || o.provider === 'Lyft') &&
               endpoints && (
                 <Pressable
@@ -1627,8 +1627,7 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
                 >
                   <Ionicons name="open-outline" size={14} color={colors.primary} />
                   <Text style={styles.pathToggleText}>
-                    Schedule in {o.provider === 'Lyft' ? 'Lyft' : 'Uber'} — pickup & drop-off
-                    already filled
+                    Schedule in {o.provider === 'Lyft' ? 'Lyft' : 'Uber'}
                   </Text>
                 </Pressable>
               )}

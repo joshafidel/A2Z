@@ -150,6 +150,57 @@ export function deriveLivingTimeline(
     });
   }
 
+  // Return flight (manual trips): its own check-in / bag-drop / boarding /
+  // departure reminders, anchored to the user-entered return schedule.
+  const ret = trip.manual?.returnFlight;
+  if (ret) {
+    const retScheduled = ret.scheduledDepartureAt;
+    const retEstimate = ret.estimatedDepartureAt;
+    const retUseEstimate =
+      retEstimate !== undefined &&
+      Math.abs(new Date(retEstimate).getTime() - new Date(retScheduled).getTime()) >= 10 * 60_000;
+    items.push({
+      id: id('ret-checkin'),
+      time: minutes(retScheduled, -24 * 60),
+      title: `Check in for the return ${ret.airlineName ?? 'flight'} ${ret.flightNumber ?? ''}`.trim(),
+      explanation: 'Online check-in opens 24 hours before the return departure.',
+      source: 'Entered by you',
+      actionRequired: true,
+      mode: 'flight',
+    });
+    if (search.bags > 0) {
+      items.push({
+        id: id('ret-bagdrop'),
+        time: minutes(retScheduled, -45),
+        title: 'Return bag-drop cutoff',
+        explanation: 'Checked bags must be dropped 45 min before the scheduled return departure.',
+        source: 'Entered by you',
+        actionRequired: true,
+        mode: 'flight',
+      });
+    }
+    items.push({
+      id: id('ret-boarding'),
+      time: minutes(retUseEstimate ? retEstimate : retScheduled, -35),
+      title: 'Return boarding begins',
+      explanation: retUseEstimate
+        ? 'Based on the estimated departure you entered.'
+        : 'Typically 35 minutes before departure.',
+      source: 'Entered by you',
+      actionRequired: false,
+      mode: 'flight',
+    });
+    items.push({
+      id: id('ret-depart'),
+      time: retScheduled,
+      title: `Return flight departs${ret.flightNumber ? ` — ${ret.airlineName ?? ''} ${ret.flightNumber}`.replace(/\s+/g, ' ') : ''}`,
+      explanation: 'Heading home.',
+      source: 'Entered by you',
+      actionRequired: false,
+      mode: 'flight',
+    });
+  }
+
   // Stable order + de-dup by id (idempotent regardless of caller behavior).
   const seen = new Map<string, Omit<LivingTimelineItem, 'status'>>();
   for (const item of items) if (!seen.has(item.id)) seen.set(item.id, item);

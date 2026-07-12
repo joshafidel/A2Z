@@ -63,9 +63,12 @@ export function CreateTripScreen({ navigation, route }: CreateTripScreenProps) {
     getProfile().then((p) => {
       setProfile(p);
       if (!m) {
+        // New trips start from the welcome-questions profile.
         setPrecheck(p.hasTsaPrecheck);
         setClear(p.hasClear);
         setBag(p.usuallyChecksBag);
+        if (p.homeCity) setOriginCity((v) => (v === '' ? p.homeCity! : v));
+        if (p.homeAirportCode) setOriginCode((v) => (v === '' ? p.homeAirportCode! : v));
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -106,6 +109,11 @@ export function CreateTripScreen({ navigation, route }: CreateTripScreenProps) {
   // Optional details
   const [airline, setAirline] = useState(m?.flight?.airlineName ?? '');
   const [flightNo, setFlightNo] = useState(m?.flight?.flightNumber ?? '');
+  const [returnTime, setReturnTime] = useState(
+    m?.returnFlight ? new Date(m.returnFlight.scheduledDepartureAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '',
+  );
+  const [returnAirline, setReturnAirline] = useState(m?.returnFlight?.airlineName ?? '');
+  const [returnFlightNo, setReturnFlightNo] = useState(m?.returnFlight?.flightNumber ?? '');
   const [hotelName, setHotelName] = useState(m?.lodging?.propertyName ?? '');
   const [hotelAddress, setHotelAddress] = useState(m?.lodging?.address ?? '');
   const [hotelUrl, setHotelUrl] = useState(m?.lodging?.bookingUrl ?? '');
@@ -146,6 +154,18 @@ export function CreateTripScreen({ navigation, route }: CreateTripScreenProps) {
             terminal: m?.flight?.terminal,
           }
         : undefined,
+      returnFlight: (() => {
+        if (!endDate || returnTime.trim() === '') return undefined;
+        const rt = parseTimeInput(returnTime);
+        if (rt === undefined) return undefined;
+        return {
+          airlineName: returnAirline.trim() === '' ? (airline.trim() === '' ? undefined : airline.trim()) : returnAirline.trim(),
+          flightNumber: returnFlightNo.trim() === '' ? undefined : returnFlightNo.trim().toUpperCase(),
+          scheduledDepartureAt: atTime(endDate, rt),
+          status: m?.returnFlight?.status ?? ('scheduled' as const),
+          estimatedDepartureAt: m?.returnFlight?.estimatedDepartureAt,
+        };
+      })(),
       lodging:
         hotelName.trim() !== ''
           ? {
@@ -169,7 +189,7 @@ export function CreateTripScreen({ navigation, route }: CreateTripScreenProps) {
   }, [
     name, purpose, originCity, originCode, destCity, destCode, depDate, depTime, endDate,
     international, bag, precheck, clear, startLoc, travelMin, bufferMin, airline, flightNo,
-    hotelName, hotelAddress, hotelUrl, notes, m,
+    returnTime, returnAirline, returnFlightNo, hotelName, hotelAddress, hotelUrl, notes, m,
   ]);
 
   const submit = async () => {
@@ -178,6 +198,10 @@ export function CreateTripScreen({ navigation, route }: CreateTripScreenProps) {
     if (!depDate) nextErrors.push('Pick a departure date.');
     if (parseTimeInput(depTime) === undefined)
       nextErrors.push('Enter the departure time like "6:05 PM" or "18:05".');
+    if (returnTime.trim() !== '' && !endDate)
+      nextErrors.push('A return flight needs a return/end date — pick one under "When."');
+    if (returnTime.trim() !== '' && parseTimeInput(returnTime) === undefined)
+      nextErrors.push('Enter the return flight time like "5:30 PM" (or clear it).');
     if (details) nextErrors.push(...validateManualTrip(details));
     if (nextErrors.length > 0 || !details) {
       setErrors(nextErrors.length > 0 ? nextErrors : ['Check the highlighted fields.']);
@@ -333,6 +357,13 @@ export function CreateTripScreen({ navigation, route }: CreateTripScreenProps) {
         <SectionHeader title="Flight & hotel (optional)" subtitle="Add what you know — you can edit later" />
         {field('Airline', airline, setAirline, { placeholder: 'Delta' })}
         {field('Flight number', flightNo, setFlightNo, { placeholder: 'DL 1232', autoCap: 'characters' })}
+        <Text style={styles.subsection}>
+          Return flight — uses your return/end date{endDate ? ` (${fmtDay(endDate)})` : ' (pick one under "When")'}
+        </Text>
+        {field('Return flight time', returnTime, setReturnTime, { placeholder: '5:30 PM' })}
+        {field('Return airline (if different)', returnAirline, setReturnAirline, { placeholder: airline || 'Delta' })}
+        {field('Return flight number', returnFlightNo, setReturnFlightNo, { placeholder: 'DL 1233', autoCap: 'characters' })}
+        <Text style={styles.subsection}>Hotel</Text>
         {field('Hotel name', hotelName, setHotelName, { placeholder: 'Grand Hyatt Boston' })}
         {field('Hotel address', hotelAddress, setHotelAddress)}
         {field('Hotel booking link', hotelUrl, setHotelUrl, { placeholder: 'https://…' })}
@@ -379,6 +410,13 @@ const styles = StyleSheet.create({
   subtitle: { fontSize: 13, color: colors.textSecondary, lineHeight: 18, marginTop: -spacing.sm },
   field: { marginBottom: spacing.md },
   fieldLabel: { fontSize: 12, fontWeight: '700', color: colors.textSecondary, marginBottom: 4 },
+  subsection: {
+    fontSize: 12.5,
+    fontWeight: '800',
+    color: colors.ink,
+    marginTop: spacing.sm,
+    marginBottom: spacing.sm,
+  },
   input: {
     borderWidth: 1,
     borderColor: colors.border,

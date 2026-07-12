@@ -675,9 +675,45 @@ export function DashboardScreen() {
         {isManual && (
           <AppButton label="Edit trip" icon="create-outline" variant="secondary" small onPress={() => goCreateTrip(activeTrip.id)} />
         )}
+        {!activeTrip.manual?.returnFlight && (
+          <AppButton
+            label="Plan the return trip"
+            icon="swap-horizontal"
+            variant="secondary"
+            small
+            onPress={() =>
+              navigation.navigate('PlanTab', {
+                screen: 'Planner',
+                params: {
+                  origin: activeTrip.search.destination,
+                  destination: activeTrip.search.origin,
+                  importedDate: activeTrip.manual?.endsAt
+                    ? activeTrip.manual.endsAt.slice(0, 10)
+                    : undefined,
+                },
+              })
+            }
+          />
+        )}
         <AppButton label="Duplicate" icon="copy-outline" variant="secondary" small onPress={onDuplicateTrip} />
         <AppButton label="Delete" icon="trash-outline" variant="ghost" small onPress={onDeleteActiveTrip} />
       </View>
+
+      {/* Return flight summary (manual trips) */}
+      {activeTrip.manual?.returnFlight && (
+        <Card>
+          <SectionHeader title="Return flight" subtitle="Entered by you — reminders are on the timeline" />
+          <Text style={styles.hotelName}>
+            {activeTrip.manual.returnFlight.airlineName ?? 'Flight'}{' '}
+            {activeTrip.manual.returnFlight.flightNumber ?? ''}
+          </Text>
+          <Text style={styles.hotelMeta}>
+            {formatDate(activeTrip.manual.returnFlight.scheduledDepartureAt)} ·{' '}
+            {formatTime(activeTrip.manual.returnFlight.scheduledDepartureAt)} ·{' '}
+            {activeTrip.search.destination.label} → {activeTrip.search.origin.label ?? 'home'}
+          </Text>
+        </Card>
+      )}
 
       {/* Manual flight status — entered by the user, never claimed live */}
       {isManual && (

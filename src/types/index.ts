@@ -433,6 +433,8 @@ export interface ManualTripDetails {
   startsAt: string; // ISO — departure date & time
   endsAt?: string; // ISO — return / end date
   flight?: ManualFlightInfo;
+  /** Return leg, entered by the user. Timeline gets its reminders too. */
+  returnFlight?: ManualFlightInfo;
   lodging?: ManualLodgingInfo;
   departure: ManualDeparturePlan;
   /** User-picked conditions when the forecast is unavailable. */
