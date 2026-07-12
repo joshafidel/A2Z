@@ -52,10 +52,21 @@ export interface TransportComparison {
 // Scoring — normalized price/duration, weighted by the user's priority.
 // ---------------------------------------------------------------------------
 
-const WEIGHTS: Record<TransportationPriority, { price: number; time: number }> = {
-  cheapest: { price: 0.8, time: 0.2 },
-  fastest: { price: 0.2, time: 0.8 },
-  balanced: { price: 0.5, time: 0.5 },
+const WEIGHTS: Record<TransportationPriority, { price: number; time: number; comfort: number }> = {
+  cheapest: { price: 0.8, time: 0.2, comfort: 0 },
+  fastest: { price: 0.2, time: 0.8, comfort: 0 },
+  balanced: { price: 0.5, time: 0.5, comfort: 0 },
+  comfort: { price: 0.2, time: 0.3, comfort: 0.5 },
+};
+
+/** How comfortable each kind typically is (1 = most comfortable). */
+const KIND_COMFORT: Record<ManualTransportKind, number> = {
+  rideshare: 1,
+  taxi: 0.95,
+  drive: 0.85,
+  other: 0.7,
+  'public-transit': 0.55,
+  walk: 0.3,
 };
 
 export function compareTransportOptions(
@@ -86,7 +97,8 @@ export function compareTransportOptions(
     // Unknown price scores mid-pack on price rather than winning by omission.
     const priceScore = o.priceUsd !== undefined && prices.length > 0 ? span(o.priceUsd, prices) : 0.5;
     const timeScore = span(o.durationMinutes, durations);
-    const score = priceScore * w.price + timeScore * w.time;
+    const comfortScore = 1 - KIND_COMFORT[o.kind]; // 0 = most comfortable
+    const score = priceScore * w.price + timeScore * w.time + comfortScore * w.comfort;
     if (score < bestScore) {
       bestScore = score;
       best = o;

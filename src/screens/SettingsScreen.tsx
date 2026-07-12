@@ -14,9 +14,11 @@ import { apiConfig } from '../services/config';
 import { getAuditLog, type AuditEntry } from '../services/approvalService';
 import type { RootTabParamList } from '../navigation/types';
 import {
+  BAG_HABIT_LABELS,
   DEFAULT_PROFILE,
   getProfile,
   saveProfile,
+  type BagHabit,
   type TransportationPriority,
   type TravelerProfile,
 } from '../services/preferencesService';
@@ -174,11 +176,26 @@ export function SettingsScreen() {
           title="Traveler profile"
           subtitle="Shapes the leave-time estimate, packing list, and transport comparison"
         />
+        <Text style={styles.fieldHint}>Home city (new trips start here)</Text>
+        <TextInput
+          style={styles.homeInput}
+          value={profile.homeCity ?? ''}
+          onChangeText={(v) => patchProfile({ homeCity: v.trim() === '' ? undefined : v })}
+          placeholder="New York"
+          placeholderTextColor={colors.textMuted}
+          accessibilityLabel="Home city"
+        />
+        {profile.airportRanking && profile.airportRanking.length > 0 && (
+          <Text style={styles.fieldHint}>
+            Airport ranking:{' '}
+            {profile.airportRanking.map((c, i) => `${i + 1}. ${c}`).join('  ·  ')} (change via
+            "Redo the welcome questions")
+          </Text>
+        )}
         {(
           [
             ['TSA PreCheck', 'hasTsaPrecheck'],
             ['CLEAR', 'hasClear'],
-            ['I usually check a bag', 'usuallyChecksBag'],
           ] as const
         ).map(([label, key]) => (
           <Pressable
@@ -226,6 +243,19 @@ export function SettingsScreen() {
             </View>
           </View>
         ))}
+        <Text style={styles.fieldHint}>Bag habit</Text>
+        <View style={styles.prefGrid}>
+          {(Object.keys(BAG_HABIT_LABELS) as BagHabit[]).map((h) => (
+            <Chip
+              key={h}
+              label={BAG_HABIT_LABELS[h].split(' — ')[0]}
+              selected={(profile.bagHabit ?? (profile.usuallyChecksBag ? 'usually' : 'sometimes')) === h}
+              onPress={() =>
+                patchProfile({ bagHabit: h, usuallyChecksBag: h === 'usually' || h === 'always' })
+              }
+            />
+          ))}
+        </View>
         <Text style={styles.fieldHint}>Temperature unit</Text>
         <View style={styles.prefGrid}>
           {(['fahrenheit', 'celsius'] as const).map((u) => (
@@ -239,7 +269,7 @@ export function SettingsScreen() {
         </View>
         <Text style={styles.fieldHint}>Transportation priority</Text>
         <View style={styles.prefGrid}>
-          {(['cheapest', 'balanced', 'fastest'] as TransportationPriority[]).map((p) => (
+          {(['cheapest', 'balanced', 'fastest', 'comfort'] as TransportationPriority[]).map((p) => (
             <Chip
               key={p}
               label={p[0].toUpperCase() + p.slice(1)}
@@ -513,6 +543,16 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   dataMessage: { fontSize: 12.5, fontWeight: '600', color: colors.text, marginTop: spacing.sm, lineHeight: 17 },
+  homeInput: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 9,
+    fontSize: 14,
+    color: colors.text,
+    backgroundColor: colors.surface,
+  },
   futureRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-start', paddingVertical: 4 },
   futureText: { flex: 1, fontSize: 12.5, color: colors.textSecondary, lineHeight: 17 },
 });

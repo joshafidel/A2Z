@@ -7,7 +7,17 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-export type TransportationPriority = 'fastest' | 'cheapest' | 'balanced';
+export type TransportationPriority = 'fastest' | 'cheapest' | 'balanced' | 'comfort';
+
+/** How often the traveler checks a bag — shapes defaults and reminders. */
+export type BagHabit = 'never' | 'sometimes' | 'usually' | 'always';
+
+export const BAG_HABIT_LABELS: Record<BagHabit, string> = {
+  never: 'Never — carry-on only',
+  sometimes: 'Sometimes — depends on the trip',
+  usually: 'Usually — most trips',
+  always: 'Always — I check a bag',
+};
 
 export interface TravelerProfile {
   version: 1;
@@ -17,6 +27,10 @@ export interface TravelerProfile {
   homeCity?: string;
   /** Preferred departing airport (IATA code, e.g. "JFK"). */
   homeAirportCode?: string;
+  /** Departing airports in preference order (1st = favorite). */
+  airportRanking?: string[];
+  /** Bag-check habit; usuallyChecksBag stays in sync for older code. */
+  bagHabit?: BagHabit;
   temperatureUnit: 'fahrenheit' | 'celsius';
   currency: string; // ISO code, display only
   hasTsaPrecheck: boolean;
@@ -65,6 +79,16 @@ export function sanitizeProfile(raw: unknown): TravelerProfile {
       typeof r.homeAirportCode === 'string' && /^[A-Za-z]{3}$/.test(r.homeAirportCode.trim())
         ? r.homeAirportCode.trim().toUpperCase()
         : undefined,
+    airportRanking: Array.isArray(r.airportRanking)
+      ? (r.airportRanking as unknown[])
+          .filter((c): c is string => typeof c === 'string' && /^[A-Za-z]{3}$/.test(c))
+          .map((c) => c.toUpperCase())
+          .slice(0, 6)
+      : undefined,
+    bagHabit:
+      r.bagHabit === 'never' || r.bagHabit === 'sometimes' || r.bagHabit === 'usually' || r.bagHabit === 'always'
+        ? r.bagHabit
+        : undefined,
     temperatureUnit: r.temperatureUnit === 'celsius' ? 'celsius' : 'fahrenheit',
     currency: typeof r.currency === 'string' && /^[A-Z]{3}$/.test(r.currency) ? r.currency : d.currency,
     hasTsaPrecheck: bool(r.hasTsaPrecheck, d.hasTsaPrecheck),
@@ -74,7 +98,9 @@ export function sanitizeProfile(raw: unknown): TravelerProfile {
     internationalBufferMinutes: num(r.internationalBufferMinutes, d.internationalBufferMinutes, 120, 420),
     trafficUncertaintyMinutes: num(r.trafficUncertaintyMinutes, d.trafficUncertaintyMinutes, 0, 90),
     transportationPriority:
-      r.transportationPriority === 'fastest' || r.transportationPriority === 'cheapest'
+      r.transportationPriority === 'fastest' ||
+      r.transportationPriority === 'cheapest' ||
+      r.transportationPriority === 'comfort'
         ? r.transportationPriority
         : 'balanced',
   };

@@ -74,6 +74,10 @@ export interface TripSearch {
   /** Checked-size bags. Carry-ons are assumed free on most modes. */
   bags: number;
   preference: TravelPreference;
+  /** Round trip vs one-way — a round trip carries the chosen return day. */
+  roundTrip?: boolean;
+  /** ISO date (YYYY-MM-DD) of the return day when roundTrip is set. */
+  returnDate?: string;
   /** Set when the user already holds a ticket (skip pricing that leg). */
   existingTicket?: {
     mode: Extract<TransportMode, 'flight' | 'train' | 'bus'>;

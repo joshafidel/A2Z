@@ -9,6 +9,13 @@ interface CalendarPickerProps {
   onSelect: (date: Date) => void;
   /** Days before today are disabled. */
   maxDaysAhead?: number;
+  /**
+   * Range mode (round trips): `selected` is the start day, `rangeEnd` the
+   * end day, and taps flow start → end → new start. Days in between get a
+   * soft highlight.
+   */
+  rangeEnd?: Date;
+  onSelectRange?: (start: Date, end?: Date) => void;
 }
 
 const WEEKDAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -21,8 +28,25 @@ function sameDay(a: Date, b: Date): boolean {
   );
 }
 
-/** Month-grid calendar for picking the travel date. Pure RN, no deps. */
-export function CalendarPicker({ selected, onSelect, maxDaysAhead = 365 }: CalendarPickerProps) {
+/** Month-grid calendar for picking a travel date or a date range. Pure RN. */
+export function CalendarPicker({
+  selected,
+  onSelect,
+  maxDaysAhead = 365,
+  rangeEnd,
+  onSelectRange,
+}: CalendarPickerProps) {
+  const handleTap = (date: Date) => {
+    if (!onSelectRange) {
+      onSelect(date);
+      return;
+    }
+    // Range flow: no start (or a finished range) → new start; a tap on or
+    // after the start closes the range; a tap before it restarts.
+    if (!selected || rangeEnd) onSelectRange(date, undefined);
+    else if (date >= selected) onSelectRange(selected, sameDay(date, selected) ? undefined : date);
+    else onSelectRange(date, undefined);
+  };
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const maxDate = new Date(today.getTime() + maxDaysAhead * 86_400_000);
@@ -84,14 +108,20 @@ export function CalendarPicker({ selected, onSelect, maxDaysAhead = 365 }: Calen
         {cells.map((date, i) => {
           if (!date) return <View key={`empty-${i}`} style={styles.cell} />;
           const disabled = date < today || date > maxDate;
-          const isSelected = selected ? sameDay(date, selected) : false;
+          const isStart = selected ? sameDay(date, selected) : false;
+          const isEnd = rangeEnd ? sameDay(date, rangeEnd) : false;
+          const isSelected = isStart || isEnd;
+          const inRange =
+            Boolean(onSelectRange && selected && rangeEnd) &&
+            date > (selected as Date) &&
+            date < (rangeEnd as Date);
           const isToday = sameDay(date, today);
           return (
             <Pressable
               key={date.toISOString()}
-              onPress={() => onSelect(date)}
+              onPress={() => handleTap(date)}
               disabled={disabled}
-              style={[styles.cell]}
+              style={[styles.cell, inRange && styles.cellInRange]}
               accessibilityRole="button"
               accessibilityState={{ disabled, selected: isSelected }}
             >
@@ -106,6 +136,7 @@ export function CalendarPicker({ selected, onSelect, maxDaysAhead = 365 }: Calen
                   style={[
                     styles.dayText,
                     disabled && styles.dayDisabled,
+                    inRange && styles.dayTextInRange,
                     isSelected && styles.dayTextSelected,
                   ]}
                 >
@@ -171,6 +202,8 @@ const styles = StyleSheet.create({
   },
   dayToday: { borderWidth: 1.5, borderColor: colors.primary },
   daySelected: { backgroundColor: colors.primary },
+  cellInRange: { backgroundColor: colors.primarySoft },
+  dayTextInRange: { color: colors.primaryDark },
   dayText: { fontSize: 13, fontWeight: '600', color: colors.text },
   dayTextSelected: { color: '#FFFFFF' },
   dayDisabled: { color: colors.border },

@@ -199,6 +199,8 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
   const [timeOfDay, setTimeOfDay] = useState<TimeOfDay | undefined>(route.params?.timeOfDay);
   const [travelers, setTravelers] = useState(route.params?.travelers ?? 1);
   const [bags, setBags] = useState(route.params?.bags ?? 1);
+  const [roundTrip, setRoundTrip] = useState(false);
+  const [returnDate, setReturnDate] = useState<Date | undefined>();
 
   // Search + selections ------------------------------------------------------
   const [search, setSearch] = useState<TripSearch>();
@@ -335,8 +337,15 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
 
   const completeDateStep = async () => {
     if (!origin || !destination || !date) return;
+    if (roundTrip && !returnDate) {
+      setStepError('Round trip: tap your departure day, then tap your return day.');
+      return;
+    }
+    setStepError(undefined);
     const d = new Date(date);
     d.setHours(timeOfDay ? TIME_OF_DAY_HOURS[timeOfDay] : 9, 0, 0, 0);
+    const fmtIsoDay = (x: Date) =>
+      `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
     const s: TripSearch = {
       origin,
       destination,
@@ -345,6 +354,8 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
       travelers,
       bags,
       preference: route.params?.preference ?? defaultPreference,
+      roundTrip,
+      returnDate: roundTrip && returnDate ? fmtIsoDay(returnDate) : undefined,
     };
     setSearch(s);
     resetFromSearch();
@@ -879,7 +890,45 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
     if (searching) return <LoadingState message="Curating every way to get there…" />;
     return (
       <View style={[styles.stepBody, styles.dateStepBody]}>
-        <CalendarPicker selected={date} onSelect={setDate} />
+        <View style={styles.quickRow}>
+          <Chip
+            label="One-way"
+            icon="arrow-forward"
+            selected={!roundTrip}
+            onPress={() => {
+              setRoundTrip(false);
+              setReturnDate(undefined);
+            }}
+          />
+          <Chip
+            label="Round trip"
+            icon="repeat"
+            selected={roundTrip}
+            onPress={() => setRoundTrip(true)}
+          />
+        </View>
+        {roundTrip ? (
+          <>
+            <CalendarPicker
+              selected={date}
+              onSelect={setDate}
+              rangeEnd={returnDate}
+              onSelectRange={(start, end) => {
+                setDate(start);
+                setReturnDate(end);
+              }}
+            />
+            <Text style={styles.rangeHint}>
+              {date && returnDate
+                ? `Depart ${date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })} → return ${returnDate.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}`
+                : date
+                  ? 'Now tap your return day to close the window.'
+                  : 'Tap your departure day, then your return day.'}
+            </Text>
+          </>
+        ) : (
+          <CalendarPicker selected={date} onSelect={setDate} />
+        )}
 
         <Text style={styles.subLabel}>DEPARTURE WINDOW (OPTIONAL)</Text>
         <View style={styles.quickRow}>
@@ -1866,13 +1915,30 @@ export function PlannerScreen({ navigation, route }: PlannerScreenProps) {
         </Card>
 
         {saved ? (
-          <Card style={styles.savedCard}>
-            <Ionicons name="checkmark-circle" size={22} color={colors.success} />
-            <Text style={styles.savedText}>
-              Trip saved! Find it in the My Trip tab — turn on reminders there to get walk/ride
-              alerts with grace periods.
-            </Text>
-          </Card>
+          <>
+            <Card style={styles.savedCard}>
+              <Ionicons name="checkmark-circle" size={22} color={colors.success} />
+              <Text style={styles.savedText}>
+                Trip saved! Find it in the My Trip tab — turn on reminders there to get walk/ride
+                alerts with grace periods.
+              </Text>
+            </Card>
+            {search?.roundTrip && search.returnDate && (
+              <AppButton
+                label={`Plan the return leg — ${new Date(`${search.returnDate}T12:00:00`).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}`}
+                icon="repeat"
+                onPress={() =>
+                  navigation.push('Planner', {
+                    origin: search.destination,
+                    destination: search.origin,
+                    importedDate: search.returnDate,
+                    travelers: search.travelers,
+                    bags: search.bags,
+                  })
+                }
+              />
+            )}
+          </>
         ) : (
           <AppButton label="Save this trip" icon="bookmark" onPress={onSave} />
         )}
@@ -2083,6 +2149,13 @@ const styles = StyleSheet.create({
   buyNowText: { fontSize: 12, color: colors.textSecondary, marginTop: 2, lineHeight: 17 },
   hotelAskHint: { fontSize: 12, color: colors.textMuted, lineHeight: 16 },
   subLabel: { ...typography.micro, color: colors.textMuted },
+  rangeHint: {
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 17,
+  },
   countRow: { flexDirection: 'row', gap: spacing.md },
   counter: {
     flex: 1,

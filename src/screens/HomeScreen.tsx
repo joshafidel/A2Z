@@ -58,6 +58,17 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
     };
   }, []);
 
+  // Explicit re-locate: the crosshair button next to FROM.
+  const [locateError, setLocateError] = useState<string>();
+  const locateNow = async () => {
+    setLocating(true);
+    setLocateError(undefined);
+    const r = await getCurrentLocation();
+    setLocating(false);
+    if (r.ok) setOrigin({ ...r.data, label: r.data.address });
+    else setLocateError(r.error);
+  };
+
   const startPlan = (destination: Place) => {
     navigation.navigate('Planner', { origin, destination });
   };
@@ -94,7 +105,16 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
               value={origin?.label}
               onSelect={(p) => setOrigin({ address: p.address, label: p.label })}
             />
+            {locateError ? <Text style={styles.locateError}>{locateError}</Text> : null}
           </View>
+          <Pressable
+            onPress={locateNow}
+            style={styles.locateButton}
+            accessibilityLabel="Use my current location"
+            accessibilityRole="button"
+          >
+            <Ionicons name="locate" size={18} color={colors.primary} />
+          </Pressable>
         </View>
 
         <View style={styles.arrowRow}>
@@ -231,6 +251,17 @@ const styles = StyleSheet.create({
   },
   importLinkText: { fontSize: 13, fontWeight: '700', color: colors.primary },
   createLink: { marginTop: -spacing.md },
+  locateButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 26,
+  },
+  locateError: { fontSize: 11, color: colors.danger, marginTop: 3 },
   body: { padding: spacing.lg, gap: spacing.lg, marginTop: spacing.sm },
   tripCard: { gap: spacing.sm },
   tripHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },

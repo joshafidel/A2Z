@@ -89,6 +89,43 @@ function reverseGeocodeMock(coords: Coords): string {
 }
 
 /**
+ * Best-effort guess of the user's home CITY (not street address) from the
+ * current position — used to prefill the welcome questions. Returns the
+ * city name plus coordinates so nearby airports can be ranked. Always
+ * editable by the user; never stored without their confirmation.
+ */
+export async function guessHomeCity(): Promise<
+  { city: string; lat: number; lng: number } | undefined
+> {
+  try {
+    const coords = await getCoords();
+    if (liveDataEnabled()) {
+      try {
+        const res = await fetchWithTimeout(
+          `https://nominatim.openstreetmap.org/reverse?lat=${coords.latitude}&lon=${coords.longitude}&format=json&zoom=10`,
+          4000,
+          { headers: { Accept: 'application/json' } },
+        );
+        if (res.ok) {
+          const body = (await res.json()) as {
+            address?: { city?: string; town?: string; village?: string; county?: string };
+          };
+          const city = body.address?.city ?? body.address?.town ?? body.address?.village;
+          if (city) return { city, lat: coords.latitude, lng: coords.longitude };
+        }
+      } catch {
+        // fall through to the anchor snap below
+      }
+    }
+    const mock = reverseGeocodeMock(coords);
+    const city = mock.split('—')[1]?.split(',')[0]?.trim();
+    return city ? { city, lat: coords.latitude, lng: coords.longitude } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Resolve the user's current position into a Place usable as a trip origin.
  */
 export async function getCurrentLocation(): Promise<ServiceResult<Place>> {

@@ -84,6 +84,54 @@ describe('onboarding profile fields', () => {
     expect(sanitizeProfile({ homeAirportCode: 'NEWARK' }).homeAirportCode).toBeUndefined();
     expect(sanitizeProfile({}).onboardingDone).toBe(false); // first open → questions run
   });
+
+  it('airport ranking keeps only valid codes in order; bag habit + comfort survive', () => {
+    const p = sanitizeProfile({
+      airportRanking: ['lga', 'JFK', 'Newark??', 'ewr'],
+      bagHabit: 'always',
+      transportationPriority: 'comfort',
+    });
+    expect(p.airportRanking).toEqual(['LGA', 'JFK', 'EWR']);
+    expect(p.bagHabit).toBe('always');
+    expect(p.transportationPriority).toBe('comfort');
+    expect(sanitizeProfile({ bagHabit: 'huge' }).bagHabit).toBeUndefined();
+  });
+});
+
+describe('comfort priority in transport comparison', () => {
+  it('comfort priority can pick the comfortable ride over the cheap transit', async () => {
+    const { compareTransportOptions } = await import('../src/services/transportOptionsService');
+    const options = [
+      { id: 'r', tripId: 't', kind: 'rideshare' as const, providerName: 'Uber', durationMinutes: 30, priceUsd: 60 },
+      { id: 't', tripId: 't', kind: 'public-transit' as const, providerName: 'Subway', durationMinutes: 45, priceUsd: 3 },
+    ];
+    expect(compareTransportOptions(options, 'cheapest').recommendedId).toBe('t');
+    expect(compareTransportOptions(options, 'comfort').recommendedId).toBe('r');
+  });
+});
+
+describe('round-trip search fields', () => {
+  it('TripSearch carries roundTrip + returnDate through a manual save', async () => {
+    const { upsertTrip } = await import('../src/services/storageService');
+    const trip = buildManualTrip(
+      {
+        name: 'x', purpose: 'other', originCity: 'New York', destinationCity: 'Boston',
+        isInternational: false, checkedBag: false, hasTsaPrecheck: false, hasClear: false,
+        startsAt: '2026-08-01T13:00:00.000Z',
+        departure: { startingLocation: 'Home', estimatedTravelMinutes: 30 },
+      },
+      DEFAULT_PROFILE,
+      'trip-round',
+    );
+    trip.search.roundTrip = true;
+    trip.search.returnDate = '2026-08-04';
+    await upsertTrip(trip);
+    const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
+    const raw = await AsyncStorage.getItem('@a2z/saved-trips');
+    const stored = JSON.parse(raw!)[0];
+    expect(stored.search.roundTrip).toBe(true);
+    expect(stored.search.returnDate).toBe('2026-08-04');
+  });
 });
 
 describe('return flight timeline', () => {

@@ -687,9 +687,11 @@ export function DashboardScreen() {
                 params: {
                   origin: activeTrip.search.destination,
                   destination: activeTrip.search.origin,
-                  importedDate: activeTrip.manual?.endsAt
-                    ? activeTrip.manual.endsAt.slice(0, 10)
-                    : undefined,
+                  importedDate:
+                    activeTrip.search.returnDate ??
+                    (activeTrip.manual?.endsAt ? activeTrip.manual.endsAt.slice(0, 10) : undefined),
+                  travelers: activeTrip.search.travelers,
+                  bags: activeTrip.search.bags,
                 },
               })
             }
