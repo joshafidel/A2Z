@@ -23,10 +23,15 @@ export type PlanStackParamList = {
   TripChat: undefined;
 };
 
+export type SettingsStackParamList = {
+  SettingsHome: undefined;
+  Preferences: undefined;
+};
+
 export type RootTabParamList = {
   PlanTab: NavigatorScreenParams<PlanStackParamList> | undefined;
   TripTab: undefined;
-  SettingsTab: undefined;
+  SettingsTab: NavigatorScreenParams<SettingsStackParamList> | undefined;
 };
 
 export type HomeScreenProps = NativeStackScreenProps<PlanStackParamList, 'Home'>;
@@ -35,3 +40,4 @@ export type ImportTripScreenProps = NativeStackScreenProps<PlanStackParamList, '
 export type CreateTripScreenProps = NativeStackScreenProps<PlanStackParamList, 'CreateTrip'>;
 export type OnboardingScreenProps = NativeStackScreenProps<PlanStackParamList, 'Onboarding'>;
 export type TripChatScreenProps = NativeStackScreenProps<PlanStackParamList, 'TripChat'>;
+export type PreferencesScreenProps = NativeStackScreenProps<SettingsStackParamList, 'Preferences'>;

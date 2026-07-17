@@ -1,62 +1,59 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, type NavigationProp } from '@react-navigation/native';
 import React, { useEffect, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppButton } from '../components/AppButton';
 import { Card } from '../components/Card';
-import { Chip } from '../components/Chip';
 import { SectionHeader } from '../components/SectionHeader';
 import { useTrip } from '../context/TripContext';
 import { BUILD_INFO } from '../buildInfo';
+import type { SettingsStackParamList } from '../navigation/types';
 import { apiConfig } from '../services/config';
 import { getAuditLog, type AuditEntry } from '../services/approvalService';
-import type { RootTabParamList } from '../navigation/types';
 import {
-  ACCEPTED_MODE_LABELS,
-  AIRPORT_ACCESS_LABELS,
-  BAG_HABIT_LABELS,
-  DEFAULT_PROFILE,
-  getProfile,
-  saveProfile,
-  type AcceptedMode,
-  type AirportAccessMode,
-  type BagHabit,
-  type TransportationPriority,
-  type TravelerProfile,
-} from '../services/preferencesService';
+  notificationsSupported,
+  requestNotificationPermission,
+} from '../services/notificationService';
+import { DEFAULT_PROFILE, getProfile, type TravelerProfile } from '../services/preferencesService';
 import * as storage from '../services/storageService';
-import { RIDESHARE_APPS } from '../services/storageService';
 import { colors, radii, spacing, typography } from '../theme';
 import { confirmAction } from '../utils/confirm';
-import { PREFERENCE_LABELS, type TravelPreference } from '../types';
 
-const RIDESHARE_META: Record<string, { icon: keyof typeof Ionicons.glyphMap; note: string }> = {
-  Uber: { icon: 'car', note: 'UberX + Uber Shuttle where offered' },
-  Lyft: { icon: 'car-sport', note: 'Lyft Standard' },
-  Empower: { icon: 'people', note: 'Driver-set prices · DC & Miami' },
-  Taxi: { icon: 'car-outline', note: 'Metered taxi / Curb' },
-};
+const LIVE_SITE = 'https://joshafidel.github.io/A2Z/';
+const REPO_BLOB = 'https://github.com/joshafidel/A2Z/blob/claude/a2z-travel-planning-mvp-4f1920';
 
-/** Settings / preferences: default optimization + integration status. */
+/** Settings: app-level controls. Travel preferences live on their own page. */
 export function SettingsScreen() {
   const insets = useSafeAreaInsets();
-  const navigation = useNavigation<NavigationProp<RootTabParamList>>();
-  const { defaultPreference, setDefaultPreference, savedTrips, refreshTrips } = useTrip();
-  const [connectedApps, setConnectedApps] = useState<string[]>([...RIDESHARE_APPS]);
+  const navigation = useNavigation<NavigationProp<SettingsStackParamList>>();
+  const { savedTrips, refreshTrips } = useTrip();
 
-  // --- Traveler profile ------------------------------------------------------
+  // Snapshot of the profile for the preferences-card summary line.
   const [profile, setProfile] = useState<TravelerProfile>(DEFAULT_PROFILE);
   useEffect(() => {
-    getProfile().then(setProfile);
-  }, []);
-  const patchProfile = (patch: Partial<TravelerProfile>) => {
-    setProfile((prev) => {
-      const next = { ...prev, ...patch };
-      saveProfile(next);
-      return next;
-    });
+    const load = () => getProfile().then(setProfile);
+    load();
+    const unsub = navigation.addListener('focus', load); // refresh after edits
+    return unsub;
+  }, [navigation]);
+
+  // --- Notifications ----------------------------------------------------------
+  const [notifMessage, setNotifMessage] = useState<string>();
+  const notifPermission =
+    Platform.OS === 'web' && typeof Notification !== 'undefined' ? Notification.permission : 'default';
+  const enableNotifications = async () => {
+    if (!notificationsSupported()) {
+      setNotifMessage('This browser does not support notifications.');
+      return;
+    }
+    const granted = await requestNotificationPermission();
+    setNotifMessage(
+      granted
+        ? 'Notifications are on — trip reminders can now alert you while this site is open.'
+        : 'Permission was denied — enable notifications for this site in your browser settings.',
+    );
   };
 
   // --- Data management: export / import / reset --------------------------------
@@ -112,18 +109,7 @@ export function SettingsScreen() {
     );
   };
 
-  useEffect(() => {
-    storage.getConnectedRideshareApps().then(setConnectedApps);
-  }, []);
-
-  const toggleApp = (app: string) => {
-    setConnectedApps((prev) => {
-      const next = prev.includes(app) ? prev.filter((a) => a !== app) : [...prev, app];
-      storage.setConnectedRideshareApps(next);
-      return next;
-    });
-  };
-
+  // --- Connections (honest status) ----------------------------------------------
   type ConnState = 'working' | 'configured' | 'not_configured' | 'partnership';
   const keyed = (configured: boolean): ConnState => (configured ? 'configured' : 'not_configured');
   const connections: Array<{ name: string; state: ConnState; note: string; envVar?: string }> = [
@@ -132,7 +118,7 @@ export function SettingsScreen() {
     { name: 'Transit routing (Transitous)', state: 'working', note: 'Real subway/bus itineraries from public GTFS feeds.' },
     { name: 'Uber / Lyft handoff', state: 'working', note: 'Opens the ride app to book your airport leg.' },
     { name: 'Google Routes', state: keyed(Boolean(apiConfig.googleMapsApiKey)), envVar: 'EXPO_PUBLIC_GOOGLE_MAPS_API_KEY', note: 'Sharper transit routes with real fares and clock times.' },
-    { name: 'Anthropic (Claude)', state: keyed(Boolean(process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY)), envVar: 'EXPO_PUBLIC_ANTHROPIC_API_KEY', note: 'AI concierge, packing lists, ride-price calibration, trip import.' },
+    { name: 'Anthropic (Claude)', state: keyed(Boolean(process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY)), envVar: 'EXPO_PUBLIC_ANTHROPIC_API_KEY', note: 'AI concierge, packing lists, ride-price calibration, trip chat.' },
     { name: 'aviationstack', state: keyed(Boolean(apiConfig.aviationstackApiKey)), envVar: 'EXPO_PUBLIC_AVIATIONSTACK_API_KEY', note: 'Real-time flight delay/cancellation/gate alerts.' },
     { name: 'TSA Wait Times', state: keyed(Boolean(apiConfig.tsaWaitApiKey)), envVar: 'EXPO_PUBLIC_TSA_WAIT_API_KEY', note: 'Live security lines feeding the leave-by advice.' },
     { name: 'Amadeus', state: keyed(Boolean(apiConfig.amadeusClientId)), envVar: 'EXPO_PUBLIC_AMADEUS_CLIENT_ID', note: 'Live airline fares on the ticket board.' },
@@ -150,6 +136,15 @@ export function SettingsScreen() {
     getAuditLog().then(setAuditLog);
   }, []);
 
+  const prefsSummary = [
+    profile.homeCity,
+    profile.airportRanking?.[0] && `✈ ${profile.airportRanking[0]} first`,
+    profile.hasTsaPrecheck && 'PreCheck',
+    profile.transportationPriority,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
   return (
     <ScrollView
       style={styles.flex}
@@ -158,182 +153,37 @@ export function SettingsScreen() {
     >
       <Text style={styles.screenTitle}>Settings</Text>
 
-      <Card>
-        <SectionHeader
-          title="Default preference"
-          subtitle="New searches start with this optimization"
-        />
-        <View style={styles.prefGrid}>
-          {(Object.keys(PREFERENCE_LABELS) as TravelPreference[]).map((p) => (
-            <Chip
-              key={p}
-              label={PREFERENCE_LABELS[p]}
-              selected={defaultPreference === p}
-              onPress={() => setDefaultPreference(p)}
-            />
-          ))}
+      {/* Travel preferences — its own page, always tweakable */}
+      <Card onPress={() => navigation.navigate('Preferences')}>
+        <View style={styles.prefsRow}>
+          <View style={styles.prefsIcon}>
+            <Ionicons name="options" size={20} color={colors.primary} />
+          </View>
+          <View style={styles.flex}>
+            <Text style={styles.prefsTitle}>Travel preferences</Text>
+            <Text style={styles.prefsSub}>
+              {prefsSummary || 'Home city, airports, modes, buffers, bags, priorities'}
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
         </View>
       </Card>
 
       <Card>
         <SectionHeader
-          title="Traveler profile"
-          subtitle="Shapes the leave-time estimate, packing list, and transport comparison"
+          title="Notifications"
+          subtitle="Trip reminders while this site is open — background alerts need the backend step"
         />
-        <Text style={styles.fieldHint}>Home city (new trips start here)</Text>
-        <TextInput
-          style={styles.homeInput}
-          value={profile.homeCity ?? ''}
-          onChangeText={(v) => patchProfile({ homeCity: v.trim() === '' ? undefined : v })}
-          placeholder="New York"
-          placeholderTextColor={colors.textMuted}
-          accessibilityLabel="Home city"
-        />
-        {profile.airportRanking && profile.airportRanking.length > 0 && (
-          <Text style={styles.fieldHint}>
-            Airport ranking:{' '}
-            {profile.airportRanking.map((c, i) => `${i + 1}. ${c}`).join('  ·  ')} (change via
-            "Redo the welcome questions")
-          </Text>
-        )}
-        {(
-          [
-            ['TSA PreCheck', 'hasTsaPrecheck'],
-            ['CLEAR', 'hasClear'],
-          ] as const
-        ).map(([label, key]) => (
-          <Pressable
-            key={key}
-            onPress={() => patchProfile({ [key]: !profile[key] } as Partial<TravelerProfile>)}
-            style={styles.integrationRow}
-            accessibilityRole="switch"
-            accessibilityState={{ checked: profile[key] }}
-          >
-            <Text style={[styles.integrationName, styles.flex]}>{label}</Text>
-            <Ionicons
-              name={profile[key] ? 'checkmark-circle' : 'ellipse-outline'}
-              size={22}
-              color={profile[key] ? colors.success : colors.textMuted}
-            />
-          </Pressable>
-        ))}
-        {(
-          [
-            ['Domestic airport buffer', 'domesticBufferMinutes', 15, 75, 240],
-            ['International airport buffer', 'internationalBufferMinutes', 15, 120, 300],
-            ['Traffic uncertainty', 'trafficUncertaintyMinutes', 5, 0, 60],
-          ] as const
-        ).map(([label, key, step, min, max]) => (
-          <View key={key} style={styles.stepperRow}>
-            <Text style={styles.stepperLabel}>{label}</Text>
-            <View style={styles.stepperControls}>
-              <Pressable
-                onPress={() => patchProfile({ [key]: Math.max(min, profile[key] - step) } as Partial<TravelerProfile>)}
-                style={styles.stepperButton}
-                accessibilityLabel={`Decrease ${label}`}
-                accessibilityRole="button"
-              >
-                <Ionicons name="remove" size={16} color={colors.primary} />
-              </Pressable>
-              <TextInput
-                style={styles.stepperValueInput}
-                value={String(profile[key])}
-                keyboardType="numeric"
-                accessibilityLabel={`${label} in minutes — tap to type a custom number`}
-                onChangeText={(v) => {
-                  const n = parseInt(v.replace(/\D/g, ''), 10);
-                  if (Number.isFinite(n)) patchProfile({ [key]: n } as Partial<TravelerProfile>);
-                }}
-                onBlur={() =>
-                  patchProfile({ [key]: Math.min(max, Math.max(min, profile[key])) } as Partial<TravelerProfile>)
-                }
-              />
-              <Text style={styles.stepperUnit}>min</Text>
-              <Pressable
-                onPress={() => patchProfile({ [key]: Math.min(max, profile[key] + step) } as Partial<TravelerProfile>)}
-                style={styles.stepperButton}
-                accessibilityLabel={`Increase ${label}`}
-                accessibilityRole="button"
-              >
-                <Ionicons name="add" size={16} color={colors.primary} />
-              </Pressable>
-            </View>
-          </View>
-        ))}
-        <Text style={styles.fieldHint}>Bag habit</Text>
-        <View style={styles.prefGrid}>
-          {(Object.keys(BAG_HABIT_LABELS) as BagHabit[]).map((h) => (
-            <Chip
-              key={h}
-              label={BAG_HABIT_LABELS[h].split(' — ')[0]}
-              selected={(profile.bagHabit ?? (profile.usuallyChecksBag ? 'usually' : 'sometimes')) === h}
-              onPress={() =>
-                patchProfile({ bagHabit: h, usuallyChecksBag: h === 'usually' || h === 'always' })
-              }
-            />
-          ))}
+        <View style={styles.dataActions}>
+          <AppButton
+            label={notifPermission === 'granted' ? 'Notifications are on' : 'Enable notifications'}
+            icon={notifPermission === 'granted' ? 'notifications' : 'notifications-outline'}
+            variant={notifPermission === 'granted' ? 'secondary' : 'primary'}
+            small
+            onPress={enableNotifications}
+          />
         </View>
-        <Text style={styles.fieldHint}>Acceptable travel modes (planner preselects these)</Text>
-        <View style={styles.prefGrid}>
-          {(Object.keys(ACCEPTED_MODE_LABELS) as AcceptedMode[]).map((m) => (
-            <Chip
-              key={m}
-              label={ACCEPTED_MODE_LABELS[m]}
-              selected={(profile.acceptedModes ?? []).includes(m)}
-              onPress={() => {
-                const current = profile.acceptedModes ?? [];
-                const next = current.includes(m) ? current.filter((x) => x !== m) : [...current, m];
-                patchProfile({ acceptedModes: next.length > 0 ? next : undefined });
-              }}
-            />
-          ))}
-        </View>
-        <Text style={styles.fieldHint}>Getting to the airport</Text>
-        <View style={styles.prefGrid}>
-          {(Object.keys(AIRPORT_ACCESS_LABELS) as AirportAccessMode[]).map((m) => (
-            <Chip
-              key={m}
-              label={AIRPORT_ACCESS_LABELS[m]}
-              selected={profile.airportAccessMode === m}
-              onPress={() => patchProfile({ airportAccessMode: m })}
-            />
-          ))}
-        </View>
-        <Text style={styles.fieldHint}>Temperature unit</Text>
-        <View style={styles.prefGrid}>
-          {(['fahrenheit', 'celsius'] as const).map((u) => (
-            <Chip
-              key={u}
-              label={u === 'fahrenheit' ? '°F' : '°C'}
-              selected={profile.temperatureUnit === u}
-              onPress={() => patchProfile({ temperatureUnit: u })}
-            />
-          ))}
-        </View>
-        <Text style={styles.fieldHint}>Transportation priority</Text>
-        <View style={styles.prefGrid}>
-          {(['cheapest', 'balanced', 'fastest', 'comfort'] as TransportationPriority[]).map((p) => (
-            <Chip
-              key={p}
-              label={p[0].toUpperCase() + p.slice(1)}
-              selected={profile.transportationPriority === p}
-              onPress={() => patchProfile({ transportationPriority: p })}
-            />
-          ))}
-        </View>
-        {profile.homeCity || profile.homeAirportCode ? (
-          <Text style={styles.fieldHint}>
-            Home: {profile.homeCity ?? '—'}
-            {profile.homeAirportCode ? ` · ${profile.homeAirportCode}` : ''}
-          </Text>
-        ) : null}
-        <AppButton
-          label="Redo the welcome questions"
-          icon="sparkles-outline"
-          variant="ghost"
-          small
-          onPress={() => navigation.navigate('PlanTab', { screen: 'Onboarding' })}
-        />
+        {notifMessage ? <Text style={styles.dataMessage}>{notifMessage}</Text> : null}
       </Card>
 
       <Card>
@@ -364,48 +214,12 @@ export function SettingsScreen() {
               accessibilityLabel="Paste exported A2Z JSON"
             />
             <AppButton label="Import this data" icon="checkmark" small onPress={onImport} />
-            <Text style={styles.fieldHint}>
+            <Text style={styles.smallHint}>
               Importing replaces everything currently stored in this browser.
             </Text>
           </View>
         )}
         {dataMessage ? <Text style={styles.dataMessage}>{dataMessage}</Text> : null}
-      </Card>
-
-      <Card>
-        <SectionHeader
-          title="Rideshare apps"
-          subtitle="Connect the apps you use — ride options only come from these"
-        />
-        <View style={styles.integrationStack}>
-          {RIDESHARE_APPS.map((app) => {
-            const connected = connectedApps.includes(app);
-            return (
-              <Pressable
-                key={app}
-                onPress={() => toggleApp(app)}
-                accessibilityRole="switch"
-                accessibilityState={{ checked: connected }}
-                style={styles.integrationRow}
-              >
-                <Ionicons
-                  name={RIDESHARE_META[app]?.icon ?? 'car'}
-                  size={18}
-                  color={connected ? colors.primary : colors.textMuted}
-                />
-                <View style={styles.flex}>
-                  <Text style={styles.integrationName}>{app}</Text>
-                  <Text style={styles.integrationNote}>{RIDESHARE_META[app]?.note}</Text>
-                </View>
-                <Ionicons
-                  name={connected ? 'checkmark-circle' : 'ellipse-outline'}
-                  size={22}
-                  color={connected ? colors.success : colors.textMuted}
-                />
-              </Pressable>
-            );
-          })}
-        </View>
       </Card>
 
       <Card>
@@ -425,19 +239,13 @@ export function SettingsScreen() {
                       : 'ellipse-outline'
                 }
                 size={18}
-                color={
-                  i.state === 'working' || i.state === 'configured'
-                    ? colors.success
-                    : colors.textMuted
-                }
+                color={i.state === 'working' || i.state === 'configured' ? colors.success : colors.textMuted}
               />
               <View style={styles.flex}>
                 <Text style={styles.integrationName}>{i.name}</Text>
                 <Text style={styles.integrationNote}>
                   {i.note}
-                  {i.state === 'not_configured' && i.envVar
-                    ? ` Add ${i.envVar} on Vercel to enable.`
-                    : ''}
+                  {i.state === 'not_configured' && i.envVar ? ` Add ${i.envVar} on Vercel to enable.` : ''}
                 </Text>
               </View>
               <Text
@@ -451,10 +259,48 @@ export function SettingsScreen() {
             </View>
           ))}
         </View>
-        <Text style={styles.envHint}>
+        <Text style={styles.smallHint}>
           Keys live in environment variables (see SETUP_REAL_DATA.md) — nothing is hardcoded, and
           nothing shows "Live" unless a real provider answered.
         </Text>
+      </Card>
+
+      <Card>
+        <SectionHeader title="Help & guides" subtitle="The instructions written for this project" />
+        {(
+          [
+            ['Open the live site', LIVE_SITE, 'globe-outline'],
+            ['Going Live guide — backend, accounts, costs', `${REPO_BLOB}/GOING_LIVE.md`, 'rocket-outline'],
+            ['Real-data setup guide — API keys step by step', `${REPO_BLOB}/SETUP_REAL_DATA.md`, 'key-outline'],
+            ['Project README', `${REPO_BLOB}/README.md`, 'book-outline'],
+          ] as Array<[string, string, keyof typeof Ionicons.glyphMap]>
+        ).map(([label, url, icon]) => (
+          <Pressable key={url} onPress={() => Linking.openURL(url)} style={styles.linkRow} accessibilityRole="link">
+            <Ionicons name={icon} size={17} color={colors.primary} />
+            <Text style={styles.linkText}>{label}</Text>
+            <Ionicons name="open-outline" size={14} color={colors.textMuted} />
+          </Pressable>
+        ))}
+      </Card>
+
+      <Card>
+        <SectionHeader
+          title="What needs a backend (honestly)"
+          subtitle="These are not switched off — they are impossible in a static site"
+        />
+        {[
+          'Email trip import requires a backend and OAuth.',
+          'Automatic flight monitoring requires a secure backend.',
+          'Account syncing requires user authentication.',
+          'Automatic booking requires commercial provider access.',
+          'Cross-device sync requires a database.',
+        ].map((line) => (
+          <View key={line} style={styles.futureRow}>
+            <Ionicons name="lock-closed-outline" size={13} color={colors.textMuted} />
+            <Text style={styles.futureText}>{line}</Text>
+          </View>
+        ))}
+        <Text style={styles.smallHint}>The Going Live guide above walks through fixing every one of these.</Text>
       </Card>
 
       <Card>
@@ -484,25 +330,6 @@ export function SettingsScreen() {
       </Card>
 
       <Card>
-        <SectionHeader
-          title="What needs a backend (honestly)"
-          subtitle="These are not switched off — they are impossible in a static site"
-        />
-        {[
-          'Email trip import requires a backend and OAuth.',
-          'Automatic flight monitoring requires a secure backend.',
-          'Account syncing requires user authentication.',
-          'Automatic booking requires commercial provider access.',
-          'Cross-device sync requires a database.',
-        ].map((line) => (
-          <View key={line} style={styles.futureRow}>
-            <Ionicons name="lock-closed-outline" size={13} color={colors.textMuted} />
-            <Text style={styles.futureText}>{line}</Text>
-          </View>
-        ))}
-      </Card>
-
-      <Card>
         <SectionHeader title="About A2Z" />
         <Text style={styles.aboutText}>
           A2Z plans your whole journey — from your front door to your final destination — across
@@ -514,9 +341,7 @@ export function SettingsScreen() {
         </Text>
         <Text style={styles.aboutMeta}>
           Build {BUILD_INFO.commit}
-          {BUILD_INFO.builtAt !== 'dev'
-            ? ` · ${new Date(BUILD_INFO.builtAt).toLocaleString()}`
-            : ' (development)'}
+          {BUILD_INFO.builtAt !== 'dev' ? ` · ${new Date(BUILD_INFO.builtAt).toLocaleString()}` : ' (development)'}
         </Text>
       </Card>
     </ScrollView>
@@ -527,13 +352,25 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   content: { padding: spacing.lg, gap: spacing.lg, paddingBottom: spacing.xxxl },
   screenTitle: { ...typography.hero, color: colors.ink },
-  prefGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  prefsRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  prefsIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  prefsTitle: { fontSize: 15, fontWeight: '800', color: colors.ink },
+  prefsSub: { fontSize: 12, color: colors.textSecondary, marginTop: 2, lineHeight: 16 },
   integrationStack: { gap: spacing.md },
   integrationRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   integrationName: { fontSize: 14, fontWeight: '600', color: colors.text },
   integrationNote: { fontSize: 12, color: colors.textMuted },
   integrationState: { fontSize: 12, fontWeight: '700', color: colors.textMuted },
   integrationLive: { color: colors.success },
+  linkRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, minHeight: 44 },
+  linkText: { flex: 1, fontSize: 14, fontWeight: '600', color: colors.text },
   auditRow: {
     flexDirection: 'row',
     gap: spacing.sm,
@@ -544,48 +381,9 @@ const styles = StyleSheet.create({
   },
   auditSummary: { fontSize: 12.5, color: colors.text, lineHeight: 17 },
   auditMeta: { fontSize: 10.5, color: colors.textMuted, marginTop: 1 },
-  envHint: {
-    marginTop: spacing.md,
-    fontSize: 12,
-    color: colors.textMuted,
-    lineHeight: 17,
-  },
+  smallHint: { marginTop: spacing.md, fontSize: 12, color: colors.textMuted, lineHeight: 17 },
   aboutText: { fontSize: 14, color: colors.textSecondary, lineHeight: 20 },
   aboutMeta: { marginTop: spacing.md, fontSize: 12, color: colors.textMuted },
-  stepperRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 6,
-    gap: spacing.md,
-  },
-  stepperLabel: { flex: 1, fontSize: 13.5, fontWeight: '600', color: colors.text },
-  stepperControls: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  stepperButton: {
-    width: 32,
-    height: 32,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stepperValue: { fontSize: 13, fontWeight: '700', color: colors.ink, minWidth: 58, textAlign: 'center' },
-  stepperValueInput: {
-    minWidth: 48,
-    textAlign: 'center',
-    fontSize: 13,
-    fontWeight: '800',
-    color: colors.ink,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radii.md,
-    paddingVertical: 5,
-    paddingHorizontal: 4,
-    backgroundColor: colors.surface,
-  },
-  stepperUnit: { fontSize: 11, fontWeight: '700', color: colors.textMuted },
-  fieldHint: { fontSize: 12, fontWeight: '700', color: colors.textSecondary, marginTop: spacing.md, marginBottom: 6 },
   dataActions: { flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' },
   importWrap: { gap: spacing.sm, marginTop: spacing.md },
   importInput: {
@@ -600,16 +398,6 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   dataMessage: { fontSize: 12.5, fontWeight: '600', color: colors.text, marginTop: spacing.sm, lineHeight: 17 },
-  homeInput: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radii.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 9,
-    fontSize: 14,
-    color: colors.text,
-    backgroundColor: colors.surface,
-  },
   futureRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-start', paddingVertical: 4 },
   futureText: { flex: 1, fontSize: 12.5, color: colors.textSecondary, lineHeight: 17 },
 });

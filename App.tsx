@@ -8,7 +8,8 @@ import { StyleSheet, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { TripProvider } from './src/context/TripContext';
-import type { PlanStackParamList, RootTabParamList } from './src/navigation/types';
+import type { PlanStackParamList, RootTabParamList, SettingsStackParamList } from './src/navigation/types';
+import { PreferencesScreen } from './src/screens/PreferencesScreen';
 import { DashboardScreen } from './src/screens/DashboardScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { PlannerScreen } from './src/screens/PlannerScreen';
@@ -20,7 +21,17 @@ import { SettingsScreen } from './src/screens/SettingsScreen';
 import { colors } from './src/theme';
 
 const Stack = createNativeStackNavigator<PlanStackParamList>();
+const SettingsNav = createNativeStackNavigator<SettingsStackParamList>();
 const Tabs = createBottomTabNavigator<RootTabParamList>();
+
+function SettingsStack() {
+  return (
+    <SettingsNav.Navigator screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }}>
+      <SettingsNav.Screen name="SettingsHome" component={SettingsScreen} />
+      <SettingsNav.Screen name="Preferences" component={PreferencesScreen} />
+    </SettingsNav.Navigator>
+  );
+}
 
 function PlanStack() {
   return (
@@ -93,7 +104,7 @@ export default function App() {
           >
             <Tabs.Screen name="PlanTab" component={PlanStack} options={{ title: 'Plan' }} />
             <Tabs.Screen name="TripTab" component={DashboardScreen} options={{ title: 'My Trip' }} />
-            <Tabs.Screen name="SettingsTab" component={SettingsScreen} options={{ title: 'Settings' }} />
+            <Tabs.Screen name="SettingsTab" component={SettingsStack} options={{ title: 'Settings' }} />
               </Tabs.Navigator>
             </NavigationContainer>
           </TripProvider>

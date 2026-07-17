@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useMemo, useRef, useState } from 'react';
-import { Animated, PanResponder, StyleSheet, Text, View } from 'react-native';
+import { Animated, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { colors, radii, spacing } from '../theme';
 
@@ -27,6 +27,15 @@ export function DragRankList({
   items: DragRankItem[];
   onReorder: (idsInOrder: string[]) => void;
 }) {
+  /** Arrow fallback — always works, even where drag gestures misbehave. */
+  const moveBy = (index: number, delta: number) => {
+    const to = index + delta;
+    if (to < 0 || to >= items.length) return;
+    const next = [...items];
+    const [moved] = next.splice(index, 1);
+    next.splice(to, 0, moved);
+    onReorder(next.map((i) => i.id));
+  };
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const translateY = useRef(new Animated.Value(0)).current;
@@ -38,8 +47,13 @@ export function DragRankList({
   const makeResponder = (index: number) =>
     // eslint-disable-next-line react-hooks/exhaustive-deps
     PanResponder.create({
+      // Capture immediately so the surrounding ScrollView can't steal the
+      // vertical gesture on touch devices.
       onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dy) > 2,
+      onStartShouldSetPanResponderCapture: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponderCapture: (_e, g) => Math.abs(g.dy) > 1,
+      onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: () => {
         dragRef.current = index;
         setDragIndex(index);
@@ -121,12 +135,36 @@ export function DragRankList({
                 </Text>
               ) : null}
             </View>
+            <View style={styles.arrowCol}>
+              <Pressable
+                onPress={() => moveBy(index, -1)}
+                disabled={index === 0}
+                style={styles.arrowButton}
+                accessibilityLabel={`Move ${item.title} up`}
+                accessibilityRole="button"
+              >
+                <Ionicons name="chevron-up" size={16} color={index === 0 ? colors.border : colors.primary} />
+              </Pressable>
+              <Pressable
+                onPress={() => moveBy(index, 1)}
+                disabled={index === items.length - 1}
+                style={styles.arrowButton}
+                accessibilityLabel={`Move ${item.title} down`}
+                accessibilityRole="button"
+              >
+                <Ionicons
+                  name="chevron-down"
+                  size={16}
+                  color={index === items.length - 1 ? colors.border : colors.primary}
+                />
+              </Pressable>
+            </View>
             <View
               {...responders[index].panHandlers}
               style={styles.handle}
               accessibilityLabel={`Drag to reorder ${item.title}, currently number ${index + 1}`}
             >
-              <Ionicons name="reorder-three" size={24} color={colors.textMuted} />
+              <Ionicons name="reorder-three" size={26} color={colors.textMuted} />
             </View>
           </Animated.View>
         );
@@ -170,12 +208,21 @@ const styles = StyleSheet.create({
   rowBody: { flex: 1 },
   title: { fontSize: 14, fontWeight: '700', color: colors.ink },
   subtitle: { fontSize: 11.5, color: colors.textMuted, marginTop: 1 },
-  handle: {
-    width: 44,
-    height: 44,
+  arrowCol: { gap: 2 },
+  arrowButton: {
+    width: 30,
+    height: 24,
     alignItems: 'center',
     justifyContent: 'center',
-    // @ts-expect-error web-only: show a grab cursor
-    cursor: 'grab',
   },
+  handle: {
+    width: 48,
+    height: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+    // Web-only CSS: without touchAction none, mobile browsers scroll the
+    // page instead of starting the drag.
+    touchAction: 'none',
+    cursor: 'pointer',
+  } as object,
 });
