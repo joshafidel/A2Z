@@ -71,13 +71,11 @@ already written and waiting for this.
 5. On the "Configure Project" page that opens, change nothing — the
    repository already contains a `vercel.json` that tells Vercel how to
    build. Click the blue **Deploy** button and wait ~2 minutes.
-6. One critical setting: Vercel builds the `main` branch by default, but
-   this project lives on a different branch. From the project page,
-   click **Settings** (tab across the top) → click **Git** in the left
-   sidebar → find the **Production Branch** box → clear it and type
-   exactly: `claude/a2z-travel-planning-mvp-4f1920` → click **Save**.
-7. Go to the **Deployments** tab (top) → click the **⋯** menu on the
-   newest row → **Redeploy** → confirm.
+6. Nothing else to configure: the repository automatically mirrors every
+   green build onto a `main` branch, and `main` is Vercel's default
+   Production branch — so **every update promotes to production by
+   itself**. If you ever see a deployment labeled "Preview," check
+   Settings → Git → Production Branch says `main`.
 
 You now have a URL like `https://a2z-yourname.vercel.app` that updates
 itself every time Claude pushes code, and it can run backend functions.

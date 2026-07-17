@@ -46,3 +46,10 @@ jobs:
           git add -A
           git commit -m "Deploy ${GITHUB_SHA:0:7}"
           git push --force "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" gh-pages
+      - name: Promote to production (sync main)
+        # Platforms like Vercel treat `main` as the Production branch, so
+        # mirroring every green build onto main means every push promotes
+        # to production automatically — no dashboard step. Runs only after
+        # tests and the build both passed.
+        if: github.ref_name != 'main'
+        run: git push --force origin HEAD:main
