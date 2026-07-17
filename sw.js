@@ -1,0 +1,74 @@
+/**
+ * A2Z service worker — makes the app installable and resilient offline.
+ *
+ * Strategy:
+ *  - App shell (navigations): network-first, falling back to the cached
+ *    shell so the app still opens without a connection.
+ *  - Static assets (JS bundles, fonts, icons): cache-first — hashed
+ *    filenames make them safe to cache forever.
+ *  - Cross-origin requests (live data APIs, booking sites): untouched.
+ */
+
+const CACHE = 'a2z-16al7pw';
+// The build step injects the site's base path (e.g. "/A2Z" on GitHub
+// Pages, "" on Vercel) and the hashed JS bundle paths, so the whole app
+// shell is cached at install time — offline works after a single visit.
+const BASE = '/A2Z';
+const BUNDLES = ["/A2Z/_expo/static/js/web/index-e7b82a19f69faab7d203619c9eb70d2d.js","/A2Z/_expo/static/js/web/node-3ee4b2c38d214db90e8486d666481e97.js"];
+const SHELL = [`${BASE}/`, `${BASE}/manifest.json`, `${BASE}/icon-192.png`, `${BASE}/icon-512.png`].concat(BUNDLES);
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches
+      .open(CACHE)
+      .then((cache) => cache.addAll(SHELL))
+      .then(() => self.skipWaiting()),
+  );
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches
+      .keys()
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim()),
+  );
+});
+
+self.addEventListener('fetch', (event) => {
+  const { request } = event;
+  if (request.method !== 'GET') return;
+
+  const url = new URL(request.url);
+  // Never intercept cross-origin calls (live data, booking handoffs).
+  if (url.origin !== self.location.origin) return;
+
+  // Navigations: network-first with cached-shell fallback.
+  if (request.mode === 'navigate') {
+    event.respondWith(
+      fetch(request)
+        .then((res) => {
+          const copy = res.clone();
+          caches.open(CACHE).then((cache) => cache.put(`${BASE}/`, copy));
+          return res;
+        })
+        .catch(() => caches.match(`${BASE}/`).then((hit) => hit ?? Response.error())),
+    );
+    return;
+  }
+
+  // Static assets: cache-first, then network (and cache the result).
+  event.respondWith(
+    caches.match(request).then(
+      (hit) =>
+        hit ??
+        fetch(request).then((res) => {
+          if (res.ok) {
+            const copy = res.clone();
+            caches.open(CACHE).then((cache) => cache.put(request, copy));
+          }
+          return res;
+        }),
+    ),
+  );
+});
