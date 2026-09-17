@@ -1,0 +1,25 @@
+{
+  "name": "A2Z — Door-to-Door Travel Planner",
+  "short_name": "A2Z",
+  "description": "Plan your whole trip from A to Z: flights, trains, buses, hotels, and the first & last mile — door to door.",
+  "start_url": "/A2Z/",
+  "scope": "/A2Z/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#101A3D",
+  "theme_color": "#101A3D",
+  "icons": [
+    {
+      "src": "/A2Z/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/A2Z/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
